@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/mrosano1987/garmin-mcp-server-1/security/advisories/new
+    about: Report privately. Do not open a public issue for a vulnerability.
+  - name: Garmin endpoint broke
+    url: https://github.com/cyberjunky/python-garminconnect/issues
+    about: >
+      If a tool stopped working with no change on your side, Garmin probably
+      changed an undocumented endpoint. That fix belongs upstream in
+      garminconnect.
+  - name: Question about setup
+    url: https://github.com/mrosano1987/garmin-mcp-server-1/blob/main/README.md#troubleshooting
+    about: The troubleshooting section covers the common failure modes.

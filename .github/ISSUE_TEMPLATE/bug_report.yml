@@ -1,0 +1,100 @@
+name: Bug report
+description: Something does not work the way the documentation says it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, please check two things:
+
+        - **Do not paste credentials, tokens, or the contents of your token
+          directory.** Logs can contain your email address — redact it.
+        - If a tool stopped working with no change on your side, Garmin may have
+          changed an endpoint. Check
+          [garminconnect issues](https://github.com/cyberjunky/python-garminconnect/issues)
+          first; the fix usually belongs upstream.
+
+        Security vulnerabilities do not go here. See
+        [SECURITY.md](https://github.com/mrosano1987/garmin-mcp-server-1/blob/main/SECURITY.md).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you expect, and what did you get instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: >
+        The tool you called and the arguments you called it with, or the prompt
+        that triggered it. A minimal case is much easier to act on.
+      placeholder: |
+        1. Started the server with `garmin-coach-mcp --read-only`
+        2. Asked the assistant to "show my last 10 runs"
+        3. Got ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Server log
+      description: >
+        Restart with `--log-level DEBUG` and paste the stderr output. Redact your
+        email address.
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `garmin-coach-mcp --version`, or the commit SHA.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: client
+    attributes:
+      label: MCP client
+      options:
+        - Claude Desktop
+        - Claude Code
+        - VS Code
+        - MCP Inspector
+        - Other / custom
+    validations:
+      required: true
+
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Transport
+      options:
+        - stdio (default)
+        - http
+    validations:
+      required: true
+
+  - type: input
+    id: install
+    attributes:
+      label: How it is installed
+      description: uvx, pipx, pip, Docker, or a source checkout.
+      placeholder: "uvx"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: OS and Python version
+      placeholder: "macOS 15.3, Python 3.12.4"
+    validations:
+      required: true

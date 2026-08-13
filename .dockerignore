@@ -1,0 +1,56 @@
+# Keep the build context tiny and reproducible.
+# NOTE: pyproject.toml, README.md, LICENSE and src/ are required by the build —
+# never add them here.
+
+# VCS and CI
+.git
+.gitignore
+.github
+.gitattributes
+
+# Local environments and caches
+.venv
+venv
+env
+__pycache__
+*.py[cod]
+*.egg-info
+.eggs
+build
+dist
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.coverage
+.coverage.*
+htmlcov
+.tox
+.nox
+
+# Secrets and local state — must never reach an image layer
+.env
+.env.*
+!.env.example
+*.token
+.garth
+.garmin-coach-mcp
+tokens
+
+# Not needed at runtime
+tests
+docs
+*.md
+!README.md
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.*.yml
+SPEC.md
+PROGRESS.md
+garmin_mcp_server.py
+
+# Editors / OS
+.idea
+.vscode
+.DS_Store
+Thumbs.db

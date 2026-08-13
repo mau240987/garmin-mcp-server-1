@@ -1,19 +1,57 @@
+name: garmin-coach-mcp
+
+# Quick start:
+#   cp .env.example .env    # fill in GARMIN_EMAIL / GARMIN_PASSWORD
+#   docker compose run --rm garmin-coach-mcp --check   # verify config + login
+#   docker compose up -d
+#
+# After the first successful login the OAuth tokens live in the `garmin-tokens`
+# volume and the credentials can be deleted from .env.
+
 services:
-  garmin-mcp:
-    build: .
-    image: garmin-mcp-server
-    container_name: garmin-mcp-server
-    ports:
-      - "8000:8000"
-    environment:
-      # Required on first run only. After the first login, tokens are saved
-      # in the garmin-tokens volume and credentials can be removed.
-      - GARMIN_EMAIL=${GARMIN_EMAIL:-}
-      - GARMIN_PASSWORD=${GARMIN_PASSWORD:-}
-    volumes:
-      # Persist Garmin auth tokens across container restarts
-      - garmin-tokens:/data/garth
+  garmin-coach-mcp:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-0.1.0}
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.12}
+    image: garmin-coach-mcp:latest
+    container_name: garmin-coach-mcp
+    init: true
     restart: unless-stopped
+
+    # Bound to loopback on purpose: the MCP endpoint has no authentication of
+    # its own. Change to "8000:8000" only behind a reverse proxy you trust.
+    ports:
+      - "127.0.0.1:8000:8000"
+
+    # Values come from the .env file in this directory (Compose loads it
+    # automatically). Anything left unset falls back to the image defaults.
+    environment:
+      GARMIN_EMAIL: ${GARMIN_EMAIL:-}
+      GARMIN_PASSWORD: ${GARMIN_PASSWORD:-}
+      GARMIN_TRANSPORT: ${GARMIN_TRANSPORT:-streamable-http}
+      GARMIN_HOST: 0.0.0.0
+      GARMIN_PORT: 8000
+      GARMIN_TOKEN_DIR: /data/tokens
+      GARMIN_READ_ONLY: ${GARMIN_READ_ONLY:-false}
+      GARMIN_LOG_LEVEL: ${GARMIN_LOG_LEVEL:-INFO}
+      GARMIN_REQUEST_TIMEOUT: ${GARMIN_REQUEST_TIMEOUT:-20}
+      GARMIN_MAX_RETRIES: ${GARMIN_MAX_RETRIES:-3}
+
+    volumes:
+      - garmin-tokens:/data/tokens
+
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   garmin-tokens:

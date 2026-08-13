@@ -1,0 +1,54 @@
+name: Feature request
+description: Propose a new tool, parameter, or behaviour.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two constraints worth knowing before you write:
+
+        - Anything that reads or writes Garmin data has to be reachable through
+          [garminconnect](https://github.com/cyberjunky/python-garminconnect).
+          If the library has no method for it, this project cannot add it.
+        - Every new write tool widens what a language model can do to a real
+          Garmin account. Proposals for destructive tools need a clear reason
+          why the narrow version is not enough.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What are you trying to do that you cannot do today? Describe the
+        situation, not the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: >
+        If it is a new tool, sketch its name, parameters, and what it returns.
+        If it changes an existing tool, say which one and how.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Does it write to the Garmin account?
+      options:
+        - "No — read only"
+        - "Yes — creates or modifies data"
+        - "Yes — deletes data"
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Including doing nothing, or handling it outside the server.
+    validations:
+      required: false
