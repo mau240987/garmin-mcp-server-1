@@ -12,7 +12,7 @@ services:
       - GARMIN_PASSWORD=${GARMIN_PASSWORD:-}
     volumes:
       # Persist Garmin auth tokens across container restarts
-      - garmin-tokens:/data/garth
+      - garmin-tokens:/data/tokens
     restart: unless-stopped
 
 volumes:

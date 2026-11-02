@@ -1,32 +1,42 @@
-# Production-Hardening Progress
+# Progress — Garmin Race Coach
 
-Target: match or beat `@modelcontextprotocol/server-filesystem` and `github/github-mcp-server`.
-Session budget: 30 minutes. Each piece gets an independent **builder** and an independent
-**critic** with fresh context. Critics inspect the real artifact — install from scratch, call the
-tools, read the docs cold — and send back the single biggest gap.
+Plan of record: the "Garmin Race Coach" brief (pieces G0, H, A1–A4, C1–C4, S1–S2, V).
+`SPEC.md` is the earlier hardening contract; its layout and rules were followed, but its API
+notes predate MCP SDK 2.3 (snake_case `ToolAnnotations`, `mcp.server.mcpserver`).
 
-**Status: round 1 — builders dispatched**
+| ID | Piece | Status | Notes |
+|---|---|---|---|
+| G0 | API coverage gate → `docs/api-coverage.md` | **Done — awaiting approval** | Official spec extracted and analyzed; real calls impossible from the dev sandbox (host blocked) → `scripts/verify_personal_api.py` for a local run. |
+| H | Hardening P1–P8 | **Done** | See below. |
+| A1 | `GarminBackend` protocol + capability router | Not started | Blocked on G0 approval (strategy choice drives the router). |
+| A2 | `OfficialPersonalBackend` | Not started | Needs G0 approval. |
+| A3 | `UnofficialBackend` + `GARMIN_ALLOW_UNOFFICIAL_WRITES` | Not started | `client.GarminSession` is the starting point. |
+| A4 | `OfficialStarterBackend` stub + requirements | Not started | |
+| C1–C4 | Goal/plan model, plan engine, new tools, export | Not started | |
+| S1–S2 | Claude skill/plugin, ChatGPT/Gemini instructions | Not started | |
+| V | Independent review + E2E | Partial | Review of H done; E2E pending later pieces. |
 
-| # | Piece | Owner files | Build | Critique | Verdict |
-|---|-------|-------------|-------|----------|---------|
-| P1 | Package & install DX | `pyproject.toml`, `cli.py`, `__main__.py`, Docker | running | — | — |
-| P2 | Tool surface & schemas | `models.py`, `workouts.py`, `formatting.py`, `server.py` | running | — | — |
-| P3 | Runtime core & errors | `config.py`, `errors.py`, `retry.py`, `client.py`, `logging_utils.py` | running | — | — |
-| P4 | Documentation | `README.md`, `docs/`, `CONTRIBUTING.md`, `SECURITY.md` | running | — | — |
-| P5 | Tests & CI | `tests/`, `.github/workflows/` | blocked on P2+P3 | — | — |
+## H — what was done
 
-## Baseline defects found in the legacy server
+Previous state: P1–P8 were only planned (no `src/`, `pyproject.toml`, tests or CI existed) and
+the legacy server did not start on a clean install (MCP SDK 2.x removed `mcp.server.fastmcp`).
 
-Recorded before any rewrite, verified against the installed `garminconnect` 0.3.2 and MCP SDK 2.0.
+- P1 packaging: `pyproject.toml` (hatchling, `src/` layout, wheel verified non-empty, console
+  script `garmin-coach-mcp`), `python -m garmin_coach_mcp`, Dockerfile installs the package and
+  runs as non-root, legacy `garmin_mcp_server.py` kept as a compatibility wrapper.
+- P2 tool surface: the 9 tools keep their names and parameters; typed pydantic inputs/outputs,
+  titles, annotations, structured output. `steps_json`/`workouts_json` kept as deprecated aliases.
+- P3 runtime: `config.Settings`, error taxonomy with remediation, retries only for idempotent
+  reads, library-level retries disabled (they also retried POSTs), auth re-login once.
+- Legacy defects fixed: silent `except: pass` (8×), `get_daily_steps` wrong arity, delete-all on
+  empty pattern, errors returned as success strings, retried creates, nested retries, unhandled
+  pace parse errors, credential in log line, removed `TargetType` names.
+- P5 tests & CI: 67 tests (fake client, no network) incl. protocol-level tests over the MCP
+  in-memory client and output-schema validation; GitHub Actions: ruff, mypy --strict, pytest on
+  3.10/3.12/3.13, wheel build + clean-venv install smoke test.
 
-1. `get_daily_steps(d)` called with 1 of 2 required args — always raised, always swallowed.
-2. Eight `except Exception: pass` blocks in `get_health_summary` hide every upstream failure.
-3. `delete_plan_workouts()` with no argument deletes **every workout in the account**.
-4. Retry decorator converts failures into the *string* `"Error after N attempts: ..."`, so the
-   client sees a successful tool result containing an error message.
-5. `push_workout` is retried on failure — a create that partially applied gets re-applied.
-6. `push_training_plan` calls the decorated `push_workout`, nesting retry inside retry.
-7. `pace_to_ms` raises an unhandled `ValueError` on malformed input.
-8. `steps_json` / `workouts_json` are JSON-encoded **strings**, so the tool schema documents
-   nothing and the client cannot validate input.
-9. Targets MCP SDK 1.x (`mcp.server.fastmcp`), which does not exist in the current SDK.
+## Open verification points
+
+- V-1/V-2 (workout units and pace target) — see `docs/api-coverage.md` §6. Needs one authorized
+  write test on a real account.
+- CI on Python 3.10 has not been run locally (only 3.13 available in the dev sandbox).

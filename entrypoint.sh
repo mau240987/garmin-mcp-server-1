@@ -6,8 +6,8 @@ echo "  Garmin MCP Server"
 echo "============================================"
 echo ""
 
-# Check if garth tokens exist (= already logged in before)
-if [ -d "/data/garth" ] && [ "$(ls -A /data/garth 2>/dev/null)" ]; then
+# Check if Garmin tokens exist (= already logged in before)
+if [ -d "/data/tokens" ] && [ "$(ls -A /data/tokens 2>/dev/null)" ]; then
     echo "  Found saved Garmin tokens."
     echo "  Credentials are NOT required."
     echo ""
@@ -23,7 +23,7 @@ else
         echo "      -p 8000:8000 \\"
         echo "      -e GARMIN_EMAIL=your@email.com \\"
         echo "      -e GARMIN_PASSWORD=yourpassword \\"
-        echo "      -v garmin-tokens:/data/garth \\"
+        echo "      -v garmin-tokens:/data/tokens \\"
         echo "      garmin-mcp-server"
         echo ""
         echo "  After the first successful login, tokens are saved in the"
@@ -31,7 +31,7 @@ else
         echo ""
         echo "    docker run -d \\"
         echo "      -p 8000:8000 \\"
-        echo "      -v garmin-tokens:/data/garth \\"
+        echo "      -v garmin-tokens:/data/tokens \\"
         echo "      garmin-mcp-server"
         echo ""
         exit 1
@@ -54,7 +54,7 @@ echo ""
 echo "============================================"
 echo ""
 
-exec python garmin_mcp_server.py \
+exec garmin-coach-mcp \
     --transport http \
     --host 0.0.0.0 \
     --port "${PORT:-8000}"

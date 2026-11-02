@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "garmin-coach-mcp-server"
+version = "2.0.0.dev0"
+description = "MCP server for Garmin Connect: activities, health metrics and structured running workouts."
+readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "garmin-coach-mcp contributors" }]
+keywords = ["mcp", "garmin", "running", "training", "model-context-protocol"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
+dependencies = [
+    "mcp>=2.3,<3",
+    "garminconnect>=0.3.20,<0.4",
+    "pydantic>=2.7,<3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10", "build>=1.2"]
+
+[project.scripts]
+garmin-coach-mcp = "garmin_coach_mcp.cli:main"
+
+[project.urls]
+Repository = "https://github.com/mrosano1987/garmin-mcp-server-1"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/garmin_coach_mcp"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/garmin_coach_mcp", "tests", "README.md", "LICENSE", "garmin_mcp_server.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "BLE", "S", "SIM", "RUF"]
+ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "BLE"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+packages = ["garmin_coach_mcp"]
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = ["garminconnect", "garminconnect.*"]
+ignore_missing_imports = true

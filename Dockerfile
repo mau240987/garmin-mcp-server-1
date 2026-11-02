@@ -2,18 +2,16 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml README.md LICENSE ./
+COPY src ./src
+RUN pip install --no-cache-dir . && useradd --create-home --uid 10001 app
 
-# Copy server
-COPY garmin_mcp_server.py .
 COPY entrypoint.sh .
-RUN chmod +x entrypoint.sh
+RUN chmod +x entrypoint.sh && mkdir -p /data/tokens && chown app /data/tokens
 
-# Garth tokens persisted here (mount as volume)
-RUN mkdir -p /data/garth
-ENV GARTH_TOKEN_DIR=/data/garth
+# Garmin tokens persisted here (mount as volume)
+ENV GARMIN_TOKEN_DIR=/data/tokens
+USER app
 
 EXPOSE 8000
 
