@@ -12,7 +12,7 @@
 | **[DOC]** | Letto nelle pagine ufficiali developer.garmin.com (overview, Personal API, FAQ). |
 | **[DEDOTTO]** | Inferenza ragionata dalla documentazione, non verificata con chiamata reale. |
 | **[NON VERIFICATO]** | Informazione da fonti secondarie (brief del progetto) non confermata. |
-| **[REALE]** | Verificato con chiamata reale. **Nessuna voce ha questo livello oggi** (vedi §1.2). |
+| **[REALE]** | Verificato con chiamata reale dall'utente il 2026-11-02 (vedi §1.2). |
 
 ### 1.1 Specifica ufficiale
 
@@ -28,19 +28,32 @@
   verificati). Per rigenerarla: scaricare il bundle indicato ed estrarre l'argomento di
   `JSON.parse(...)` che inizia con `{"openapi"`.
 
-### 1.2 Verifica empirica: non eseguita
+### 1.2 Verifica empirica [REALE] — 2026-11-02
 
-L'ambiente di sviluppo usato per questa analisi **non può raggiungere**
-`personal.connectapi.garmin.com` (connessione rifiutata dal proxy di rete della sandbox), quindi
-non è stato possibile alcun test reale, nemmeno avendo una chiave. Per chiudere i punti aperti:
+La sandbox di sviluppo non raggiunge `personal.connectapi.garmin.com`; la verifica è stata
+eseguita dall'utente sulla propria macchina con `scripts/verify_personal_api.py` (solo `GET` più
+il `POST` del token; il report contiene codici HTTP e presenza dei campi, mai valori).
 
-```bash
-export GARMIN_PERSONAL_API_KEY=...        # mai in chat, mai nel repo
-python3 scripts/verify_personal_api.py 2026-10-30 > personal-api-report.md
-```
+| Verifica | Esito reale |
+|---|---|
+| Token: `POST …/personal-api-key/token`, header `ApiKey <key>` | **HTTP 200**, `text/plain`, corpo = **JWT** (3 segmenti, 1141 byte). Nessun JSON, nessun `expires_in`. |
+| Schema di autenticazione delle chiamate dati | `Authorization: Bearer <token>` → **200**; token senza prefisso → 400 |
+| `usersummary/daily` | 200; presenti passi, RHR, RHR 7 gg, stress medio, Body Battery max/min/al risveglio, SpO2 |
+| `sleep/dailySleep` | 200; presenti durata, `sleepScores`, sonno profondo, stress nel sonno (DTO **non** incapsulato) |
+| `hrv/{date}` e `hrv/daily/{from}/{to}` | 200; `hrvSummary` / `hrvSummaries` presenti |
+| `bodyBattery/reports/daily` | 200; `charged`, `drained`, serie valori presenti |
+| `dailyHeartRate` | 200; RHR e media 7 gg presenti |
+| `heartRateZones/v2` | 200; zone e sport presenti |
+| `userprofile/settings` | 200; `availableTrainingDays` e `preferredLongTrainingDays` **vuoti** per questo account (non impostati) |
+| `activities/search/activities` | 200; tempo in zona FC, Training Effect aerobico/anaerobico, `activityTrainingLoad`, `splitSummaries`, `lapCount` presenti; **`vO2MaxValue` assente** (nella prima attività del periodo) |
+| `activity/{id}` e `/{id}/workouts` | 200; `summaryDTO`, `splitSummaries`, step del workout presenti |
+| Download FIT | **406** con `Accept: application/json` (header sbagliato dello script, ora corretto); download **non ancora verificato** |
+| Training Readiness / massimali VO2max / libreria workout (percorsi non ufficiali) | **404** sull'host Personal: confermato non disponibili |
 
-Lo script fa solo `GET` (più il `POST` di emissione token documentato), stampa codici HTTP e
-**presenza** dei campi (mai i valori). Il report va rivisto prima di condividerlo.
+Conseguenze nel codice: il backend ufficiale usa `Bearer` (confermato) e accetta il JWT in
+testo semplice, programmando il rinnovo sulla sua scadenza `exp` (letta senza verificarne la
+firma; fallback 24 h). Non ancora verificati: paginazione di `activities/search` oltre 100
+risultati, risposta 204 di `hrv/{date}` nei giorni senza dati, download FIT, rate limit.
 
 ## 2. Il Personal API in sintesi [SPEC][DOC]
 
@@ -68,8 +81,8 @@ Autenticazione [DOC]: chiave creata dall'utente in Garmin Connect Web (scadenza 
 Token: `POST /personalapitoken-service/personal-api/personal-api-key/token` con header
 `Authorization: ApiKey <key>`; access token valido **24 h** (o fino alla scadenza della chiave),
 **nessun refresh token** — se ne chiede uno nuovo. Lo schema della risposta del token **non è
-documentato** e il formato dell'header per le chiamate successive (`Bearer`) è **[DEDOTTO]** da
-"OAuth2 access tokens" nella FAQ. Rate limit: **non documentati** nelle pagine lette.
+documentato**; verificato [REALE]: è un JWT in testo semplice, e le chiamate dati usano
+`Authorization: Bearer <token>`. Rate limit: **non documentati** nelle pagine lette.
 
 **Assente dalla specifica** [SPEC]: Training Readiness, Training Status, carico acuto/cronico,
 endpoint dei massimali (VO2max giornaliero), libreria workout, calendario, qualsiasi scrittura,
@@ -114,7 +127,7 @@ mentre non lo sarebbe se lo si volesse estendere allo stato nativo Garmin; `get_
 | Segnalazione | Esito | Evidenza |
 |---|---|---|
 | Personal non espone Training Readiness, Training Status, carico acuto/cronico | **Confermato** (nessun endpoint) | [SPEC] |
-| VO2max non disponibile | **Parzialmente smentito**: `vO2MaxValue` per attività è documentato nell'elenco attività; nessun VO2max giornaliero. Che il campo sia valorizzato va verificato | [SPEC] / da verificare [REALE] |
+| VO2max non disponibile | **Confermato nei fatti**: `vO2MaxValue` è documentato per attività ma **assente** nella risposta reale (prima attività del periodo); nessun VO2max giornaliero (404). Da ricontrollare su una corsa all'aperto con GPS | [SPEC] + [REALE] |
 | Nessuna scrittura con chiave Personal | **Confermato** (solo GET) | [SPEC] |
 | Base URL `personal.connectapi.garmin.com` | **Confermato** (+ `.cn`) | [SPEC][DOC] |
 | Download FIT `/download-service/files/activity/{activityId}` | **Confermato** (risposta zip) | [SPEC] |

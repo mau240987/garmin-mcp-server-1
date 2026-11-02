@@ -218,7 +218,8 @@ def main() -> int:
         for label, (tpl, fields) in ACTIVITY_CHECKS.items():
             code, payload = request("GET", tpl.format(a=activity_id), auth)
             print(f"| {label} | {code} | {field_report(payload, fields) if code == 200 else '-'} |")
-        code, payload = request("GET", f"/download-service/files/activity/{activity_id}", auth)
+        fit_auth = {**auth, "Accept": "application/x-zip-compressed, application/octet-stream"}
+        code, payload = request("GET", f"/download-service/files/activity/{activity_id}", fit_auth)
         print(f"| FIT download | {code} | {payload if code == 200 else '-'} |")
     for label, tpl in NEGATIVE_CHECKS.items():
         code, _ = request("GET", tpl.format(d=day), auth)

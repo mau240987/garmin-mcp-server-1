@@ -9,7 +9,7 @@ notes predate MCP SDK 2.3 (snake_case `ToolAnnotations`, `mcp.server.mcpserver`)
 | G0 | API coverage gate → `docs/api-coverage.md` | **Done — strategy A approved** | Official spec extracted and analyzed; real calls impossible from the dev sandbox (host blocked) → `scripts/verify_personal_api.py` for a local run. |
 | H | Hardening P1–P8 | **Done** | See below. |
 | A1 | `GarminBackend` protocol + capability router | **Done** | `backends/base.py`, `backends/router.py`; 9 tools refactored; the 83 pre-existing tests pass unchanged through the router. |
-| A2 | `OfficialPersonalBackend` | **Done (not verified against the real API)** | Token lifecycle, retries, key-expiry notices, attribution; tested with spec-shaped fixtures. Real calls blocked in the dev sandbox. |
+| A2 | `OfficialPersonalBackend` | **Done — verified on the real API** (2026-11-02, owner's machine) | Token = plain-text JWT, `Bearer` confirmed, all used endpoints 200 with expected fields. See `docs/api-coverage.md` §1.2. |
 | A3 | `UnofficialBackend` + `GARMIN_ALLOW_UNOFFICIAL_WRITES` | Partial | `UnofficialBackend` exists (A1); the write flag is not implemented yet. |
 | A4 | `OfficialStarterBackend` stub + requirements | Not started | |
 | C1–C4 | Goal/plan model, plan engine, new tools, export | Not started | |
@@ -37,8 +37,8 @@ the legacy server did not start on a clean install (MCP SDK 2.x removed `mcp.ser
 
 ## Open verification points
 
-- A2 assumptions to confirm with `scripts/verify_personal_api.py`: token response format,
-  `Bearer` header, pagination of `activities/search`, whether `hrv/{date}` returns 204 when empty.
+- A2: token format and `Bearer` confirmed on the real API. Still unverified: pagination of
+  `activities/search` beyond 100 results, `hrv/{date}` 204 on empty days, FIT download, rate limits.
 - Attribution text is a placeholder until the API Brand Guidelines PDF is reviewed (R3).
 
 - V-1/V-2 (workout units and pace target) — see `docs/api-coverage.md` §6. Needs one authorized

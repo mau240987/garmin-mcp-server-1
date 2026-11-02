@@ -591,3 +591,47 @@ def test_urllib_transport_does_not_follow_redirects() -> None:
         server.shutdown()
     assert resp.status == 302
     assert seen == ["Bearer x"]  # only the first request; the redirect was not followed
+
+
+def _jwt(claims: dict[str, Any]) -> bytes:
+    import base64
+
+    def seg(obj: dict[str, Any]) -> str:
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).decode().rstrip("=")
+
+    return f"{seg({'alg': 'RS256'})}.{seg(claims)}.c2lnbmF0dXJl".encode()
+
+
+def test_real_token_format_plain_text_jwt_with_exp(
+    official: OfficialPersonalBackend, transport: FakeTransport, clock: list[float]
+) -> None:
+    """Shape observed on the real API: text/plain JWT. Renewal follows its `exp` claim."""
+    import time as _time
+
+    body = _jwt({"exp": int(_time.time()) + 3600})
+    transport.routes[("POST", TOKEN_PATH)] = [
+        HttpResponse(200, body, {"Content-Type": "text/plain"})
+    ]
+    official.daily_summary(DAY)
+    sent = transport.requests[-1][3]["Authorization"]
+    assert sent == f"Bearer {body.decode()}"
+    clock[0] += 3600 - 299  # within 5 min of the JWT's real expiry, well before 24 h
+    official.daily_summary(DAY)
+    assert transport.count("POST", TOKEN_PATH) == 2
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [{}, {"exp": "soon"}, {"exp": True}, {"exp": 1}],  # missing, wrong type, past
+)
+def test_jwt_without_usable_exp_falls_back_to_24h(
+    official: OfficialPersonalBackend,
+    transport: FakeTransport,
+    clock: list[float],
+    claims: dict[str, Any],
+) -> None:
+    transport.routes[("POST", TOKEN_PATH)] = [HttpResponse(200, _jwt(claims))]
+    official.daily_summary(DAY)
+    clock[0] += 3600 * 12
+    official.daily_summary(DAY)
+    assert transport.count("POST", TOKEN_PATH) == 1

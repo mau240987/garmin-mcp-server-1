@@ -5,14 +5,15 @@ Facts used here:
 - token: POST /personalapitoken-service/personal-api/personal-api-key/token with header
   `Authorization: ApiKey <key>`; access token valid 24 h, no refresh token  [DOC]
 - data calls are GETs on personal.connectapi.garmin.com (.cn for China)      [SPEC]
-Assumptions, to confirm with scripts/verify_personal_api.py (marked [DEDOTTO] in the doc):
-- the token response is JSON carrying the token under access_token/accessToken/token
-  (or a bare string), optionally with expires_in seconds;
-- data calls authenticate with `Authorization: Bearer <token>`.
+Verified with a real call on 2026-11-02 (scripts/verify_personal_api.py):
+- the token response is a **plain-text JWT** (text/plain); JSON forms are still accepted
+  defensively in case Garmin changes it;
+- data calls authenticate with `Authorization: Bearer <token>` (a bare token gets HTTP 400).
 """
 
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import http.client
 import json
@@ -94,6 +95,27 @@ def urllib_transport(
         return HttpResponse(exc.code, exc.read() or b"", dict(exc.headers.items()))
 
 
+def _jwt_ttl(token: str, now: Callable[[], float] = time.time) -> float | None:
+    """Seconds until the JWT's `exp` claim, read WITHOUT verifying the signature.
+
+    Only used to schedule renewal; Garmin validates the token on every call. Verified on a
+    real call (2026-11-02): the token endpoint returns a plain-text JWT.
+    """
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        padded = parts[1] + "=" * (-len(parts[1]) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(padded))
+    except (ValueError, TypeError):
+        return None
+    exp = claims.get("exp") if isinstance(claims, dict) else None
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)):
+        return None
+    ttl = float(exp) - now()
+    return ttl if ttl > 0 else None
+
+
 def _extract_token(body: bytes) -> tuple[str | None, float]:
     text = body.decode("utf-8", errors="replace").strip()
     try:
@@ -103,7 +125,9 @@ def _extract_token(body: bytes) -> tuple[str | None, float]:
     if isinstance(data, str):
         # Only accept something that looks like a token, never e.g. an HTML page.
         candidate = data.strip()
-        return (candidate if _PLAIN_TOKEN_RE.match(candidate) else None), DEFAULT_TOKEN_TTL_S
+        if not _PLAIN_TOKEN_RE.match(candidate):
+            return None, DEFAULT_TOKEN_TTL_S
+        return candidate, min(_jwt_ttl(candidate) or DEFAULT_TOKEN_TTL_S, DEFAULT_TOKEN_TTL_S)
     if isinstance(data, dict):
         token = next(
             (
