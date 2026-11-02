@@ -265,7 +265,12 @@ def test_athlete_profile(app: MCPServer) -> None:
     base = prof["baseline"]
     assert base["recent_weekly_km"] == 30.0 and base["longest_run_km"] == 14.0
     assert base["runs_per_week"] == pytest.approx(3.0, abs=0.3) and base["from_garmin"]
-    assert base["easy_pace_s_per_km"] == EASY_PACE  # hard runs excluded from easy pace
+    # Easy pace from the best effort (8 km at 6:20/km -> VDOT), not from the HR zones.
+    from garmin_coach_mcp.coach.vdot import easy_pace, vdot_from_race
+
+    best = vdot_from_race(8000, 8 * 380)
+    assert base["vdot"] == round(best, 1) and "8.00 km in 0:50:40" in base["vdot_source"]
+    assert base["easy_pace_s_per_km"] == round(easy_pace(best))
     assert prof["level"] == "intermediate"
     assert prof["easy_share"] < 0.75 and len(prof["too_hard_runs"]) == 11
     assert any("too fast" in i for i in prof["insights"])
@@ -771,7 +776,10 @@ def test_export_rejects_inverted_range(app: MCPServer) -> None:
 def test_easy_pace_uses_moving_time(reads: FakeGarminReads, store: CoachStore) -> None:
     for a in reads.activities:
         if "duration" in a and a.get("hrTimeInZone_1"):
-            a["movingDuration"] = a["distance"] / 1000 * 400  # stops excluded: 6:40/km
+            # Runs under 5 km: no VDOT, so the easy pace comes from the HR zones.
+            a["duration"] = a["duration"] * 4500 / a["distance"]
+            a["distance"] = 4500
+            a["movingDuration"] = 4.5 * 400  # stops excluded: 6:40/km
     app = make_app(reads, store)
     prof = call(app, "get_athlete_profile", {})["profile"]
     assert prof["baseline"]["easy_pace_s_per_km"] == 400
@@ -864,3 +872,30 @@ def test_scale_and_make_easy_keep_variety_sessions_consistent(
     assert f"{reps}x" in fart.description
     easy = next(s for w in saved.weeks for s in w.sessions if str(s.date) == plain_long["date"])
     assert easy.kind.value == "easy"  # a plain long run made easy is an easy run again
+
+
+def test_easy_pace_falls_back_to_hr_zones_without_efforts(
+    app: MCPServer, reads: FakeGarminReads
+) -> None:
+    """No run of 5 km or more: no VDOT, the easy pace comes from the Z1-Z2 runs as before."""
+    monday = TODAY - dt.timedelta(days=TODAY.weekday())
+    reads.activities = [
+        run(monday - dt.timedelta(weeks=w, days=-d), 4.5, hard=h, pace=p)
+        for w in range(1, 9)
+        for d, h, p in ((1, 0.1, EASY_PACE), (3, 0.9, 360))
+    ]
+    base = call(app, "get_athlete_profile", {})["profile"]["baseline"]
+    assert base["vdot"] is None and base["easy_pace_s_per_km"] == EASY_PACE
+
+
+def test_slow_hr_zone_pace_is_flagged(app: MCPServer, reads: FakeGarminReads) -> None:
+    """Z2-zone runs much slower than the performance-based easy pace: zones probably too low."""
+    monday = TODAY - dt.timedelta(days=TODAY.weekday())
+    reads.activities = [
+        run(monday - dt.timedelta(weeks=w, days=-d), km, hard=h, pace=p)
+        for w in range(1, 9)
+        for d, km, h, p in ((1, 8, 0.1, 450), (3, 10, 0.9, 310), (6, 15, 0.6, 340))
+    ]
+    prof = call(app, "get_athlete_profile", {})["profile"]
+    assert prof["baseline"]["easy_pace_s_per_km"] < 450 - 45
+    assert any("Z2 ceiling" in i for i in prof["insights"])

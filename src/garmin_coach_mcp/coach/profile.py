@@ -13,6 +13,9 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from garmin_coach_mcp.coach.models import AthleteBaseline, Level
+from garmin_coach_mcp.coach.vdot import MIN_EFFORT_M, VDOT_RANGE, vdot_from_race
+from garmin_coach_mcp.coach.vdot import easy_pace as vdot_easy_pace
+from garmin_coach_mcp.formatting import format_pace
 
 EASY_ZONE_SHARE = 0.70  # a run is "easy" when >= 70% of its time is in HR zones 1-2
 TOO_HARD_SHARE = 0.40  # a non-long run with >= 40% of its time in Z3+ is flagged
@@ -85,6 +88,27 @@ class AthleteProfile(BaseModel):
     insights: list[str] = Field(default_factory=list)
 
 
+def best_effort(runs: list[dict[str, Any]]) -> tuple[float, str] | None:
+    """Highest VDOT among whole runs of at least MIN_EFFORT_M, with a description."""
+    best: tuple[float, str] | None = None
+    for a in runs:
+        meters, seconds = _num(a.get("distance")), _num(a.get("duration"))
+        if meters < MIN_EFFORT_M or seconds <= 0:
+            continue
+        v = vdot_from_race(meters, seconds)
+        if not VDOT_RANGE[0] <= v <= VDOT_RANGE[1]:
+            continue  # implausible: GPS error, wrong activity type
+        if best is None or v > best[0]:
+            s = round(seconds)
+            when = activity_date(a)
+            best = (
+                v,
+                f"{meters / 1000:.2f} km in {s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}"
+                + (f" on {when}" if when else ""),
+            )
+    return best
+
+
 def compute_profile(
     activities: list[dict[str, Any]],
     today: dt.date,
@@ -129,7 +153,11 @@ def compute_profile(
         and (h := hard_share(a)) is not None
         and h <= 1 - EASY_ZONE_SHARE
     ]
-    easy_pace = round(statistics.median(easy_paces)) if easy_paces else None
+    hr_easy_pace = round(statistics.median(easy_paces)) if easy_paces else None
+    best = best_effort(runs)
+    # Performance first: the HR-zone easy pace depends on how the athlete's Garmin zones are set
+    # (a low Z2 ceiling gives an unrealistically slow pace).
+    easy_pace = round(vdot_easy_pace(best[0])) if best else hr_easy_pace
 
     longest = max((_num(a.get("distance")) / 1000 for a in runs), default=0.0)
     baseline = AthleteBaseline(
@@ -139,6 +167,8 @@ def compute_profile(
         longest_run_km=round(longest, 1),
         runs_per_week=round(sum(w.runs for w in complete) / len(complete), 1) if complete else 0.0,
         easy_pace_s_per_km=easy_pace,
+        vdot=round(best[0], 1) if best else None,
+        vdot_source=best[1] if best else None,
         from_garmin=bool(runs),
     )
 
@@ -173,6 +203,17 @@ def compute_profile(
             f"{len(too_hard)} shorter runs spent >= 40% of their time in Z3-Z5 "
             "(easy runs run too hard)."
         )
+    if best and easy_pace is not None:
+        insights.append(
+            f"Performance level VDOT {best[0]:.1f} from {best[1]}: easy pace "
+            f"{format_pace(easy_pace)}-{format_pace(easy_pace + 30)}."
+        )
+        if hr_easy_pace is not None and hr_easy_pace - easy_pace > 45:
+            insights.append(
+                f"Runs kept in Garmin HR zones 1-2 average {format_pace(hr_easy_pace)}, much "
+                "slower than the performance-based easy pace: the Z2 ceiling of the Garmin HR "
+                "zones may be set too low. The plan uses the performance-based pace."
+            )
     if easy_pace is None and runs:
         insights.append("Easy pace unknown (no runs with HR zone data mostly in Z1-Z2).")
     if recovery:

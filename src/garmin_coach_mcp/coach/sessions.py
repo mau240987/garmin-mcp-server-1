@@ -58,6 +58,7 @@ def session_steps(
     session: PlannedSession,
     easy_pace: float | None,
     race_pace: float | None,
+    threshold_pace: float | None = None,
 ) -> list[WorkoutStep | RepeatStep]:
     """Steps for one session. Raises ValueError for a race (not a workout)."""
     km = session.distance_km
@@ -122,8 +123,9 @@ def session_steps(
         )
     elif kind is SessionKind.RACE_PACE:
         steps.append(_run(main, "run", rp))
-    else:  # TEMPO: effort-based (comfortably hard), no pace target without a threshold pace
-        steps.append(_run(main, "run", None))
+    else:  # TEMPO: threshold pace (+8/-5 s) when known, else effort-based (comfortably hard)
+        tp = (threshold_pace + 8, max(150.0, threshold_pace - 5)) if threshold_pace else None
+        steps.append(_run(main, "run", tp))
     steps.append(_run(COOLDOWN_KM, "cooldown", easy))
     return steps
 

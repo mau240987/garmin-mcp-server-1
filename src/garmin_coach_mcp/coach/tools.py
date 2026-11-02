@@ -731,7 +731,9 @@ def register_coach_tools(
                 name = workout_name(s, week_index)
                 try:
                     if needs_create:
-                        steps = session_steps(s, plan.easy_pace, goal.race_pace_s_per_km)
+                        steps = session_steps(
+                            s, plan.easy_pace, goal.race_pace_s_per_km, plan.threshold_pace
+                        )
                         minutes = s.est_duration_min or max(20, round(s.distance_km * 7))
                         # Mark before calling Garmin: a crash in between leaves an "uncertain"
                         # session instead of a silent duplicate on the next push.
