@@ -22,6 +22,7 @@ from mcp.client import Client
 
 from garmin_coach_mcp.cli import build_router
 from garmin_coach_mcp.coach.storage import CoachStore
+from garmin_coach_mcp.coach.tools import WRITES_UNAVAILABLE_NOTE
 from garmin_coach_mcp.config import Settings
 from garmin_coach_mcp.errors import ConfigurationError, GarminMCPError
 from garmin_coach_mcp.server import build_server
@@ -39,6 +40,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--retry-uncertain", action="store_true")
     p.add_argument("--summary", type=Path, help="Append the Markdown report to this file.")
     return p.parse_args(argv)
+
+
+def _dry_run_text(text: str, apply: bool) -> str:
+    """The tool's text; in a dry run, without the "writes not available" note, which here only
+    reflects that writes are enabled solely by --apply."""
+    if apply:
+        return text.strip()
+    lines = [line for line in text.strip().splitlines() if line != WRITES_UNAVAILABLE_NOTE]
+    lines.append("_Dry run: nothing was sent. Garmin writes are enabled only with apply._")
+    return "\n".join(lines)
 
 
 def _report(lines: list[str], summary: Path | None) -> None:
@@ -100,7 +111,7 @@ async def run(args: argparse.Namespace) -> int:
         f"- To create: {data.get('to_create')} · to schedule: {data.get('to_schedule')} · "
         f"obsolete to delete: {data.get('to_delete')}",
         "",
-        str(data.get("text", "")).strip(),
+        _dry_run_text(str(data.get("text", "")), args.apply),
     ]
     if not args.apply:
         send = int(data.get("to_create", 0)) + int(data.get("to_schedule", 0))

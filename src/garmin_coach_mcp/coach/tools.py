@@ -121,6 +121,14 @@ class UpdateResult(BaseModel):
     text: str
 
 
+#: Last line of a dry run when no backend may write workouts. garmin-coach-push replaces it,
+#: because its dry runs disable writes on purpose (they are enabled only with --apply).
+WRITES_UNAVAILABLE_NOTE = (
+    "Garmin writes are not available in this configuration; use export_plan "
+    "format=fit instead (see the error of a real push for how to enable them)."
+)
+
+
 class PushEntry(BaseModel):
     date: dt.date
     name: str
@@ -689,14 +697,7 @@ def register_coach_tools(
                     f"{len(schedule)} schedule), {len(stale)} obsolete to delete."
                 ]
                 + listing
-                + (
-                    []
-                    if can_write
-                    else [
-                        "Garmin writes are not available in this configuration; use export_plan "
-                        "format=fit instead (see the error of a real push for how to enable them)."
-                    ]
-                )
+                + ([] if can_write else [WRITES_UNAVAILABLE_NOTE])
             )
             return base
         if expected_count != to_send or (stale and expected_delete_count != len(stale)):
