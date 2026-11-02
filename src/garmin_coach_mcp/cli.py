@@ -7,6 +7,9 @@ import sys
 from collections.abc import Sequence
 
 from garmin_coach_mcp import __version__
+from garmin_coach_mcp.backends import BackendRouter, GarminBackend
+from garmin_coach_mcp.backends.official_personal import OfficialPersonalBackend
+from garmin_coach_mcp.backends.unofficial import UnofficialBackend
 from garmin_coach_mcp.client import GarminSession
 from garmin_coach_mcp.config import LOG_LEVELS, Settings
 from garmin_coach_mcp.errors import GarminMCPError
@@ -49,6 +52,23 @@ def _interactive_login(settings: Settings) -> int:
     return 0
 
 
+def build_router(settings: Settings) -> BackendRouter:
+    """Official Personal backend when a key is set; unofficial backend when it has a session
+    (or when nothing else is configured, so errors keep explaining how to log in)."""
+    backends: list[GarminBackend] = []
+    official: OfficialPersonalBackend | None = None
+    if settings.personal_api_key:
+        official = OfficialPersonalBackend.from_settings(settings)
+        backends.append(official)
+    if settings.has_unofficial_session or not backends:
+        backends.append(UnofficialBackend(GarminSession(settings)))
+    return BackendRouter(
+        backends,
+        allow_unofficial_reads=settings.allow_unofficial_reads,
+        notices=official.notices if official else None,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
@@ -63,12 +83,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.login:
         return _interactive_login(settings)
 
-    app = build_server(GarminSession(settings))
+    router = build_router(settings)
+    app = build_server(router, read_only=settings.read_only)
     log.info(
-        "garmin-coach-mcp %s starting (transport=%s, read_only=%s)",
+        "garmin-coach-mcp %s starting (transport=%s, read_only=%s, backends=%s)",
         __version__,
         args.transport,
         settings.read_only,
+        ",".join(b.name for b in router.backends),
     )
     if args.transport == "stdio":
         app.run(transport="stdio")

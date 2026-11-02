@@ -64,6 +64,22 @@ python3 -m venv .venv && .venv/bin/pip install .
 | `GARMIN_READ_ONLY` | `false` | Hide write tools. |
 | `GARMIN_MAX_RETRIES` | `2` | Retries for read operations on transient errors. |
 | `GARMIN_LOG_LEVEL` | `INFO` | Logs go to stderr only. |
+| `GARMIN_PERSONAL_API_KEY` | — | Official Garmin Connect **Personal API** key. When set, reads use the official API. |
+| `GARMIN_PERSONAL_API_KEY_EXPIRES` | — | Expiry date you chose for the key (`YYYY-MM-DD`); tools warn 14 days ahead. |
+| `GARMIN_PERSONAL_API_REGION` | `global` | `cn` for Garmin China accounts. |
+| `GARMIN_ALLOW_UNOFFICIAL_READS` | `false` | With a Personal key: let reads the official API lacks (Training Readiness, workout library) use the unofficial backend. |
+
+### Backends: official first
+
+| Configuration | Reads | Writes (`push_*`, `delete_*`) |
+|---|---|---|
+| Only `GARMIN_EMAIL`/`GARMIN_PASSWORD` (or saved tokens) | unofficial (as before) | unofficial |
+| Only `GARMIN_PERSONAL_API_KEY` | **official**; Training Readiness and `get_workouts` unavailable (explained in the result) | unavailable, with guidance |
+| Both | **official**; the missing ones only with `GARMIN_ALLOW_UNOFFICIAL_READS=true` | unofficial |
+
+Data served by the official API carries a `sources` entry with Garmin attribution. The
+Personal API is read-only and for your own data only; create the key in Garmin Connect Web
+(Personal API Key page). Details and evidence: [`docs/api-coverage.md`](docs/api-coverage.md).
 
 ---
 

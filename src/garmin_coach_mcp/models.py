@@ -143,6 +143,21 @@ def parse_workouts_json(raw: str | list[Any]) -> list[PlanWorkout]:
 # ---------------------------------------------------------------------------- outputs
 
 
+class DataSource(BaseModel):
+    """Which Garmin backend served the data, with the attribution required for official data."""
+
+    backend: str = Field(description="'official-personal' or 'unofficial'.")
+    official: bool
+    attribution: str | None = None
+
+
+class _Sourced(BaseModel):
+    sources: list[DataSource] = Field(default_factory=list)
+    notices: list[str] = Field(
+        default_factory=list, description="Operational notices, e.g. API key expiring soon."
+    )
+
+
 class ActivitySummary(BaseModel):
     activity_id: int | None
     date: str | None = Field(description="Local start date YYYY-MM-DD.")
@@ -156,19 +171,19 @@ class ActivitySummary(BaseModel):
     calories: float | None = None
 
 
-class ActivityList(BaseModel):
+class ActivityList(_Sourced):
     count: int
     activities: list[ActivitySummary]
     text: str = Field(description="Human-readable rendering.")
 
 
-class ActivityDetails(BaseModel):
+class ActivityDetails(_Sourced):
     activity_id: int
     summary: ActivitySummary | None = None
     raw: dict[str, Any] = Field(description="Full payload as returned by Garmin Connect.")
 
 
-class HealthSummary(BaseModel):
+class HealthSummary(_Sourced):
     date: dt.date
     steps: int | None = None
     resting_hr: int | None = None
@@ -190,7 +205,7 @@ class HealthSummary(BaseModel):
     text: str = ""
 
 
-class TrainingVolume(BaseModel):
+class TrainingVolume(_Sourced):
     days: int
     start_date: dt.date
     end_date: dt.date
@@ -209,7 +224,7 @@ class WorkoutInfo(BaseModel):
     sport: str | None = None
 
 
-class WorkoutList(BaseModel):
+class WorkoutList(_Sourced):
     count: int
     workouts: list[WorkoutInfo]
     text: str = ""

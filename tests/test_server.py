@@ -15,6 +15,8 @@ from mcp.client import Client
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
+from garmin_coach_mcp.backends import BackendRouter
+from garmin_coach_mcp.backends.unofficial import UnofficialBackend
 from garmin_coach_mcp.client import GarminSession
 from garmin_coach_mcp.server import build_server
 from tests.conftest import FakeGarmin
@@ -48,7 +50,8 @@ STEPS = [
 
 @pytest.fixture
 def app(make_session: Callable[..., GarminSession]) -> MCPServer:
-    return build_server(make_session(), sleep=lambda _s: None)
+    router = BackendRouter([UnofficialBackend(make_session())])
+    return build_server(router, sleep=lambda _s: None)
 
 
 def call(app: MCPServer, name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -82,7 +85,7 @@ def test_all_original_tools_registered(app: MCPServer) -> None:
 
 
 def test_read_only_mode_hides_writes(make_session: Callable[..., GarminSession]) -> None:
-    app = build_server(make_session(read_only=True))
+    app = build_server(BackendRouter([UnofficialBackend(make_session())]), read_only=True)
     assert {t.name for t in tool_list(app)} == ORIGINAL_TOOLS - WRITE_TOOLS
 
 

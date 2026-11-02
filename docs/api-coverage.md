@@ -1,6 +1,6 @@
 # Copertura API Garmin — Gate G0
 
-> Stato: **bozza in attesa di approvazione** · Data analisi: 2026-11-02
+> Stato: **Strategia A approvata il 2026-11-02** · Data analisi: 2026-11-02
 > Scopo: decidere quali dei 9 tool possono passare all'API ufficiale **Personal** e cosa resta
 > fuori, prima di scrivere i backend (A2–A4).
 
@@ -180,7 +180,16 @@ Alternative considerate:
 - **C — Solo non ufficiale (stato attuale):** funzionalità piena ma rischio R4 e fragilità
   dimostrata; sconsigliata come default.
 
-## 8. Decisioni richieste prima di A2/C3
+## 8. Decisioni
+
+- **Strategia A approvata** (2026-11-02). Implementata in A1/A2: `BackendRouter`
+  (`src/garmin_coach_mcp/backends/router.py`) e `OfficialPersonalBackend`.
+- Domanda 2 (fallback Training Readiness): applicato il default proposto, **opt-in** con
+  `GARMIN_ALLOW_UNOFFICIAL_READS=true`, in attesa di conferma.
+- Scritture: restano sul backend non ufficiale quando configurato; il flag
+  `GARMIN_ALLOW_UNOFFICIAL_WRITES` (off di default) arriva con A3.
+
+### Domande ancora aperte
 
 1. Approvi la **Strategia A** (o preferisci B come default)?
 2. Fallback non ufficiale per Training Readiness: **opt-in** come proposto, oppure eliminato?

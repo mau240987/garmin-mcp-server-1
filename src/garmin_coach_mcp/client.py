@@ -66,7 +66,8 @@ def http_status(exc: BaseException) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _by_status(status: int, exc: BaseException, operation: str) -> GarminMCPError | None:
+def error_for_status(status: int, exc: BaseException | None, operation: str) -> GarminMCPError:
+    """Map an HTTP status to our taxonomy (5xx and unknown codes -> retryable upstream)."""
     if status in (401, 403):
         return AuthenticationError(
             f"Garmin Connect rejected the session during {operation} (HTTP {status}).",
@@ -94,7 +95,11 @@ def _by_status(status: int, exc: BaseException, operation: str) -> GarminMCPErro
             remediation="Check the arguments; the request will fail the same way if repeated.",
             cause=exc,
         )
-    return None
+    return UpstreamServiceError(
+        f"Garmin Connect failed during {operation} (HTTP {status}).",
+        remediation="Retry later; Garmin Connect may be temporarily unavailable.",
+        cause=exc,
+    )
 
 
 def map_exception(exc: BaseException, operation: str) -> GarminMCPError:
@@ -112,10 +117,12 @@ def map_exception(exc: BaseException, operation: str) -> GarminMCPError:
         return UpstreamServiceError(f"{operation} failed.", cause=exc)
 
     status = http_status(exc)
-    if status is not None and not isinstance(exc, GarminConnectAuthenticationError):
-        mapped = _by_status(status, exc, operation)
-        if mapped is not None:
-            return mapped
+    if (
+        status is not None
+        and status < 500
+        and not isinstance(exc, GarminConnectAuthenticationError)
+    ):
+        return error_for_status(status, exc, operation)
 
     if isinstance(exc, GarminConnectAuthenticationError):
         return AuthenticationError(

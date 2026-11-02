@@ -6,11 +6,11 @@ notes predate MCP SDK 2.3 (snake_case `ToolAnnotations`, `mcp.server.mcpserver`)
 
 | ID | Piece | Status | Notes |
 |---|---|---|---|
-| G0 | API coverage gate → `docs/api-coverage.md` | **Done — awaiting approval** | Official spec extracted and analyzed; real calls impossible from the dev sandbox (host blocked) → `scripts/verify_personal_api.py` for a local run. |
+| G0 | API coverage gate → `docs/api-coverage.md` | **Done — strategy A approved** | Official spec extracted and analyzed; real calls impossible from the dev sandbox (host blocked) → `scripts/verify_personal_api.py` for a local run. |
 | H | Hardening P1–P8 | **Done** | See below. |
-| A1 | `GarminBackend` protocol + capability router | Not started | Blocked on G0 approval (strategy choice drives the router). |
-| A2 | `OfficialPersonalBackend` | Not started | Needs G0 approval. |
-| A3 | `UnofficialBackend` + `GARMIN_ALLOW_UNOFFICIAL_WRITES` | Not started | `client.GarminSession` is the starting point. |
+| A1 | `GarminBackend` protocol + capability router | **Done** | `backends/base.py`, `backends/router.py`; 9 tools refactored; the 83 pre-existing tests pass unchanged through the router. |
+| A2 | `OfficialPersonalBackend` | **Done (not verified against the real API)** | Token lifecycle, retries, key-expiry notices, attribution; tested with spec-shaped fixtures. Real calls blocked in the dev sandbox. |
+| A3 | `UnofficialBackend` + `GARMIN_ALLOW_UNOFFICIAL_WRITES` | Partial | `UnofficialBackend` exists (A1); the write flag is not implemented yet. |
 | A4 | `OfficialStarterBackend` stub + requirements | Not started | |
 | C1–C4 | Goal/plan model, plan engine, new tools, export | Not started | |
 | S1–S2 | Claude skill/plugin, ChatGPT/Gemini instructions | Not started | |
@@ -36,6 +36,10 @@ the legacy server did not start on a clean install (MCP SDK 2.x removed `mcp.ser
   3.12/3.13, wheel build + clean-venv install smoke test.
 
 ## Open verification points
+
+- A2 assumptions to confirm with `scripts/verify_personal_api.py`: token response format,
+  `Bearer` header, pagination of `activities/search`, whether `hrv/{date}` returns 204 when empty.
+- Attribution text is a placeholder until the API Brand Guidelines PDF is reviewed (R3).
 
 - V-1/V-2 (workout units and pace target) — see `docs/api-coverage.md` §6. Needs one authorized
   write test on a real account.

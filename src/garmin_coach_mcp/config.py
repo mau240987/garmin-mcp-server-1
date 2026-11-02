@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -59,6 +60,14 @@ class Settings:
     read_only: bool = False
     max_retries: int = 2
     log_level: str = "INFO"
+    #: Official Garmin Connect Personal API key (GARMIN_PERSONAL_API_KEY). Never logged.
+    personal_api_key: str | None = field(default=None, repr=False)
+    #: Expiry date chosen when the key was created (Garmin does not expose it via the API).
+    personal_api_key_expires: dt.date | None = None
+    personal_api_region: str = "global"
+    #: Let reads the official API cannot serve (e.g. Training Readiness) fall back to the
+    #: unofficial backend. Off by default (strategy A, docs/api-coverage.md §7).
+    allow_unofficial_reads: bool = False
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None, **overrides: Any) -> Settings:
@@ -75,6 +84,21 @@ class Settings:
                 remediation="Fix GARMIN_LOG_LEVEL or remove it to use INFO.",
             )
 
+        expires_raw = (source.get("GARMIN_PERSONAL_API_KEY_EXPIRES") or "").strip()
+        try:
+            expires = dt.date.fromisoformat(expires_raw) if expires_raw else None
+        except ValueError as exc:
+            raise ConfigurationError(
+                f"GARMIN_PERSONAL_API_KEY_EXPIRES must be YYYY-MM-DD, got {expires_raw!r}.",
+                remediation="Set it to the expiry date shown in Garmin Connect, or remove it.",
+            ) from exc
+        region = (source.get("GARMIN_PERSONAL_API_REGION") or "global").strip().lower()
+        if region not in ("global", "cn"):
+            raise ConfigurationError(
+                f"GARMIN_PERSONAL_API_REGION must be 'global' or 'cn', got {region!r}.",
+                remediation="Use 'cn' only for Garmin China accounts.",
+            )
+
         settings = cls(
             email=(source.get("GARMIN_EMAIL") or None),
             password=(source.get("GARMIN_PASSWORD") or None),
@@ -84,6 +108,12 @@ class Settings:
                 "GARMIN_MAX_RETRIES", source.get("GARMIN_MAX_RETRIES"), 2, lo=0, hi=10
             ),
             log_level=log_level,
+            personal_api_key=(source.get("GARMIN_PERSONAL_API_KEY") or "").strip() or None,
+            personal_api_key_expires=expires,
+            personal_api_region=region,
+            allow_unofficial_reads=_parse_bool(
+                "GARMIN_ALLOW_UNOFFICIAL_READS", source.get("GARMIN_ALLOW_UNOFFICIAL_READS"), False
+            ),
         )
         clean = {k: v for k, v in overrides.items() if v is not None}
         return replace(settings, **clean) if clean else settings
@@ -91,3 +121,9 @@ class Settings:
     @property
     def has_credentials(self) -> bool:
         return bool(self.email and self.password)
+
+    @property
+    def has_unofficial_session(self) -> bool:
+        """Credentials or stored tokens exist for the unofficial backend (no network check)."""
+        d = self.token_dir
+        return self.has_credentials or (d.is_dir() and any(d.iterdir()))

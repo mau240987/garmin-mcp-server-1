@@ -63,3 +63,7 @@ class InvalidRequestError(GarminMCPError):
 
 class ReadOnlyModeError(GarminMCPError):
     """A write was attempted while the server runs in read-only mode."""
+
+
+class CapabilityUnavailableError(GarminMCPError):
+    """No configured backend may serve the requested capability."""

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import functools
 import time
 from collections.abc import Callable
 from typing import Annotated, Any, TypeVar
@@ -13,7 +12,7 @@ from mcp.types import ToolAnnotations
 from pydantic import BeforeValidator, Field
 
 from garmin_coach_mcp import __version__
-from garmin_coach_mcp.client import SupportsCall
+from garmin_coach_mcp.backends import BackendRouter, Capability, GarminBackend
 from garmin_coach_mcp.errors import GarminMCPError, InvalidRequestError, UpstreamServiceError
 from garmin_coach_mcp.formatting import format_duration, format_pace, pace_from
 from garmin_coach_mcp.logging_utils import get_logger
@@ -21,6 +20,7 @@ from garmin_coach_mcp.models import (
     ActivityDetails,
     ActivityList,
     ActivitySummary,
+    DataSource,
     DeleteResult,
     HealthSummary,
     PlanEntryResult,
@@ -118,10 +118,6 @@ def _empty_to_none(value: Any) -> Any:
     return None if isinstance(value, str) and not value.strip() else value
 
 
-def _delete_one(workout_id: int, client: Any) -> Any:
-    return client.delete_workout(workout_id)
-
-
 def _resolve_steps(
     steps: list[WorkoutStep | RepeatStep] | None, steps_json: str | list[Any] | None
 ) -> list[WorkoutStep | RepeatStep]:
@@ -145,9 +141,12 @@ def _resolve_steps(
 
 
 def build_server(
-    session: SupportsCall, *, sleep: Callable[[float], None] = time.sleep
+    router: BackendRouter,
+    *,
+    read_only: bool = False,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> MCPServer:
-    """Construct the server and register tools. Honours `session.settings.read_only`."""
+    """Construct the server and register tools; write tools are omitted when read_only."""
     app: MCPServer = MCPServer(
         name="garmin-coach-mcp",
         title="Garmin Coach",
@@ -155,11 +154,26 @@ def build_server(
         version=__version__,
     )
 
-    def run(operation: str, fn: Callable[[Any], T], *, idempotent: bool = True) -> T:
+    def route(cap: Capability, fn: Callable[[GarminBackend], T]) -> tuple[T, GarminBackend]:
+        """Pick the backend for `cap` and run `fn`; errors become MCP tool errors."""
         try:
-            return session.call(operation, fn, idempotent=idempotent)
+            backend = router.select(cap)
+            return fn(backend), backend
         except GarminMCPError as exc:
             raise exc.to_tool_error() from exc
+
+    def sources(*backends: GarminBackend) -> list[DataSource]:
+        seen: dict[str, DataSource] = {}
+        for b in backends:
+            seen.setdefault(
+                b.name,
+                DataSource(backend=b.name, official=b.official, attribution=router.attribution(b)),
+            )
+        return list(seen.values())
+
+    def footer(srcs: list[DataSource], notices: list[str]) -> list[str]:
+        lines = [f"Source: {s.attribution}" for s in srcs if s.attribution]
+        return lines + [f"Notice: {n}" for n in notices]
 
     # ------------------------------------------------------------------ read tools
 
@@ -189,17 +203,24 @@ def build_server(
             ),
         ] = "",
     ) -> ActivityList:
-        raw = run("get_activities", lambda c: c.get_activities(start, limit))
-        items = [summarize_activity(a) for a in (raw or []) if isinstance(a, dict)]
+        raw, backend = route(Capability.ACTIVITIES_LIST, lambda b: b.list_activities(start, limit))
+        items = [summarize_activity(a) for a in raw]
         if activity_type:
             needle = activity_type.strip().lower()
             items = [s for s in items if needle in s.type.lower()]
-        text = (
-            "\n".join([f"Found {len(items)} activities:", *map(_activity_line, items)])
+        srcs, notices = sources(backend), router.notices()
+        lines = (
+            [f"Found {len(items)} activities:", *map(_activity_line, items)]
             if items
-            else "No activities found."
+            else ["No activities found."]
         )
-        return ActivityList(count=len(items), activities=items, text=text)
+        return ActivityList(
+            count=len(items),
+            activities=items,
+            text="\n".join(lines + footer(srcs, notices)),
+            sources=srcs,
+            notices=notices,
+        )
 
     @app.tool(
         name="get_activity_details",
@@ -212,12 +233,17 @@ def build_server(
         structured_output=True,
     )
     def get_activity_details(activity_id: ActivityId) -> ActivityDetails:
-        raw = run("get_activity_details", lambda c: c.get_activity(activity_id))
-        data = _dict(raw)
+        data, backend = route(Capability.ACTIVITY_DETAILS, lambda b: b.activity(int(activity_id)))
         summary_src = {**_dict(data.get("summaryDTO")), **data}
         summary_src.setdefault("activityType", data.get("activityTypeDTO"))
         summary = summarize_activity(summary_src) if data else None
-        return ActivityDetails(activity_id=int(activity_id), summary=summary, raw=data)
+        return ActivityDetails(
+            activity_id=int(activity_id),
+            summary=summary,
+            raw=data,
+            sources=sources(backend),
+            notices=router.notices(),
+        )
 
     @app.tool(
         name="get_health_summary",
@@ -236,16 +262,22 @@ def build_server(
         d = date_str.isoformat()
         out = HealthSummary(date=date_str)
         errors: list[GarminMCPError] = []
+        used: list[GarminBackend] = []
 
-        def fetch(group: str, fn: Callable[[Any], Any]) -> Any:
+        def fetch(group: str, cap: Capability, fn: Callable[[GarminBackend], Any]) -> Any:
             try:
-                return session.call(f"get_health_summary.{group}", fn)
+                backend = router.select(cap)
+                value = fn(backend)
             except GarminMCPError as exc:
                 errors.append(exc)
-                out.unavailable[group] = exc.message
+                out.unavailable[group] = str(exc)
                 return None
+            used.append(backend)
+            return value
 
-        summary = _dict(fetch("daily_summary", lambda c: c.get_user_summary(d)))
+        summary = _dict(
+            fetch("daily_summary", Capability.DAILY_SUMMARY, lambda b: b.daily_summary(date_str))
+        )
         if summary:
             out.steps = _as_int(summary.get("totalSteps"))
             out.resting_hr = _as_int(summary.get("restingHeartRate"))
@@ -256,7 +288,7 @@ def build_server(
             out.body_battery_low = _as_int(summary.get("bodyBatteryLowestValue"))
             out.spo2_avg = _as_float(summary.get("averageSpo2"))
 
-        sleep = _dict(_dict(fetch("sleep", lambda c: c.get_sleep_data(d))).get("dailySleepDTO"))
+        sleep = _dict(fetch("sleep", Capability.SLEEP, lambda b: b.sleep(date_str)))
         if sleep:
             secs = _as_float(sleep.get("sleepTimeSeconds"))
             out.sleep_hours = round(secs / 3600, 2) if secs else None
@@ -264,15 +296,19 @@ def build_server(
                 _dict(_dict(sleep.get("sleepScores")).get("overall")).get("value")
             )
 
-        hrv = _dict(_dict(fetch("hrv", lambda c: c.get_hrv_data(d))).get("hrvSummary"))
+        hrv = _dict(
+            _dict(fetch("hrv", Capability.HRV, lambda b: b.hrv(date_str))).get("hrvSummary")
+        )
         if hrv:
             out.hrv_last_night_avg = _as_float(hrv.get("lastNightAvg"))
             out.hrv_weekly_avg = _as_float(hrv.get("weeklyAvg"))
             out.hrv_status = hrv.get("status") if isinstance(hrv.get("status"), str) else None
 
-        readiness = fetch("training_readiness", lambda c: c.get_training_readiness(d))
-        if isinstance(readiness, list) and readiness:
-            readiness = readiness[0]
+        readiness = fetch(
+            "training_readiness",
+            Capability.TRAINING_READINESS,
+            lambda b: b.training_readiness(date_str),
+        )
         out.training_readiness = _as_int(_dict(readiness).get("score"))
 
         if len(errors) == 4:
@@ -301,7 +337,9 @@ def build_server(
         lines += [f"• {k}: unavailable ({v})" for k, v in out.unavailable.items()]
         if len(lines) == 1:
             lines.append("  No health data recorded for this date.")
-        out.text = "\n".join(lines)
+        out.sources = sources(*used)
+        out.notices = router.notices()
+        out.text = "\n".join(lines + footer(out.sources, out.notices))
         return out
 
     @app.tool(
@@ -320,11 +358,9 @@ def build_server(
     ) -> TrainingVolume:
         end = dt.date.today()
         start = end - dt.timedelta(days=days)
-        raw = run(
-            "get_training_status",
-            lambda c: c.get_activities_by_date(start.isoformat(), end.isoformat()),
+        acts, backend = route(
+            Capability.ACTIVITIES_BY_DATE, lambda b: b.activities_between(start, end)
         )
-        acts = [a for a in (raw or []) if isinstance(a, dict)]
         runs = [summarize_activity(a) for a in acts]
         runs = [r for r in runs if "running" in r.type.lower()]
         total_km = sum(r.distance_km for r in runs)
@@ -340,6 +376,8 @@ def build_server(
             total_duration=format_duration(total_s),
             avg_pace=avg,
             recent_runs=runs[:10],
+            sources=sources(backend),
+            notices=router.notices(),
         )
         out.text = "\n".join(
             [
@@ -350,6 +388,7 @@ def build_server(
                 f"• Total duration: {out.total_duration}",
                 f"• Avg pace: {avg or 'N/A'}",
                 *(_activity_line(r) for r in out.recent_runs),
+                *footer(out.sources, out.notices),
             ]
         )
         return out
@@ -364,15 +403,14 @@ def build_server(
     def get_workouts(
         limit: Annotated[int, Field(ge=1, le=200, description="Workouts to fetch.")] = 20,
     ) -> WorkoutList:
-        raw = run("get_workouts", lambda c: c.get_workouts(0, limit))
+        raw, backend = route(Capability.WORKOUTS_LIST, lambda b: b.list_workouts(0, limit))
         items = [
             WorkoutInfo(
                 workout_id=_as_int(w.get("workoutId")),
                 name=str(w.get("workoutName") or "Unnamed"),
                 sport=_dict(w.get("sportType")).get("sportTypeKey"),
             )
-            for w in (raw or [])
-            if isinstance(w, dict)
+            for w in raw
         ]
         text = (
             "\n".join(
@@ -382,9 +420,9 @@ def build_server(
             if items
             else "No workouts found on Garmin Connect."
         )
-        return WorkoutList(count=len(items), workouts=items, text=text)
+        return WorkoutList(count=len(items), workouts=items, text=text, sources=sources(backend))
 
-    if session.settings.read_only:
+    if read_only:
         return app
 
     # ----------------------------------------------------------------- write tools
@@ -397,10 +435,8 @@ def build_server(
     ) -> PushWorkoutResult:
         workout = build_running_workout(name, steps, minutes * 60)
         # Raises GarminMCPError (not ToolError) so plan pushes can report per entry.
-        created = session.call(
-            "push_workout.create", lambda c: c.upload_running_workout(workout), idempotent=False
-        )
-        workout_id = _as_int(_dict(created).get("workoutId"))
+        created = router.select(Capability.WORKOUT_CREATE).create_running_workout(workout)
+        workout_id = _as_int(created.get("workoutId"))
         if workout_id is None:
             raise UpstreamServiceError(
                 "Garmin accepted the workout but returned no workoutId, so it was not scheduled.",
@@ -412,11 +448,7 @@ def build_server(
         result = PushWorkoutResult(workout_id=workout_id, name=name, scheduled_date=when)
         if when is not None and workout_id is not None:
             try:
-                session.call(
-                    "push_workout.schedule",
-                    lambda c: c.schedule_workout(workout_id, when.isoformat()),
-                    idempotent=False,
-                )
+                router.select(Capability.WORKOUT_SCHEDULE).schedule_workout(workout_id, when)
                 result.scheduled = True
             except GarminMCPError as exc:
                 # The workout exists; report the partial success instead of hiding it.
@@ -507,6 +539,9 @@ def build_server(
                 "No workouts given.", remediation="Pass a non-empty `workouts` array."
             ).to_tool_error()
 
+        for cap in (Capability.WORKOUT_CREATE, Capability.WORKOUT_SCHEDULE):
+            route(cap, lambda b: None)  # fail once, before the loop, if writes are impossible
+
         results: list[PlanEntryResult] = []
         for i, entry in enumerate(entries):
             when = start_date + dt.timedelta(days=entry.day_offset)
@@ -566,7 +601,7 @@ def build_server(
         structured_output=True,
     )
     def delete_workout(workout_id: WorkoutId) -> DeleteResult:
-        run("delete_workout", lambda c: c.delete_workout(workout_id), idempotent=False)
+        route(Capability.WORKOUT_DELETE, lambda b: b.delete_workout(int(workout_id)))
         return DeleteResult(deleted_ids=[int(workout_id)], text=f"Workout {workout_id} deleted.")
 
     @app.tool(
@@ -599,12 +634,14 @@ def build_server(
                 "name_contains must contain at least 3 non-space characters.",
                 remediation="Use a pattern specific to the plan, e.g. its name.",
             ).to_tool_error()
-        raw = run("delete_plan_workouts.list", lambda c: c.get_workouts(0, 500))
+        # Fail before listing if deleting is impossible anyway.
+        if not router.can(Capability.WORKOUT_DELETE):
+            route(Capability.WORKOUT_DELETE, lambda b: None)
+        raw, _ = route(Capability.WORKOUTS_LIST, lambda b: b.list_workouts(0, 500))
         matches = [
             w
-            for w in (raw or [])
-            if isinstance(w, dict)
-            and needle in str(w.get("workoutName") or "").lower()
+            for w in raw
+            if needle in str(w.get("workoutName") or "").lower()
             and _as_int(w.get("workoutId")) is not None
         ]
         ids = [int(w["workoutId"]) for w in matches]
@@ -629,13 +666,10 @@ def build_server(
             )
         deleted: list[int] = []
         failed: dict[str, str] = {}
+        writer = router.select(Capability.WORKOUT_DELETE)
         for wid in ids:
             try:
-                session.call(
-                    "delete_plan_workouts.delete",
-                    functools.partial(_delete_one, wid),
-                    idempotent=False,
-                )
+                writer.delete_workout(wid)
                 deleted.append(wid)
             except GarminMCPError as exc:
                 failed[str(wid)] = str(exc)
