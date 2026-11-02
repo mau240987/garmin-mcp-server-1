@@ -30,6 +30,7 @@ dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10", "build>=1.2", "pyyaml>=6"]
 [project.scripts]
 garmin-coach-mcp = "garmin_coach_mcp.cli:main"
 garmin-coach-push = "garmin_coach_mcp.push_cli:main"
+garmin-coach-weekly = "garmin_coach_mcp.weekly_cli:main"
 
 [project.urls]
 Repository = "https://github.com/mrosano1987/garmin-mcp-server-1"

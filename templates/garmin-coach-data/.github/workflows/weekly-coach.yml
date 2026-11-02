@@ -1,0 +1,83 @@
+# Weekly coach — every Monday morning: reviews last week against the plan (Garmin activities,
+# recovery signals), adapts the coming weeks with the engine's bounded changes (never more
+# volume), checks whether the performance level moved, and prepares the week on Garmin.
+#
+# Garmin writes happen only if the repository variable GARMIN_AUTO_PUSH is "true": setting it
+# is a standing authorization to send each week's workouts without a further confirmation.
+# Otherwise the summary lists what to send with the "Push to Garmin" workflow.
+# Each run opens an issue with the summary (GitHub notifies it, also on the mobile app).
+name: Weekly coach
+
+on:
+  schedule:
+    - cron: "17 4 * * 1" # Monday 04:17 UTC (05:17 in Italy in winter, 06:17 in summer)
+  workflow_dispatch:
+    inputs:
+      no_adapt:
+        description: "Review only: do not change the plan"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: garmin-push
+  cancel-in-progress: false
+
+jobs:
+  weekly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Garmin Race Coach
+        env:
+          REF: ${{ vars.GARMIN_COACH_REF || 'main' }}
+        run: pip install "git+https://github.com/mrosano1987/garmin-mcp-server-1.git@${REF}"
+
+      - name: Weekly check-in
+        env:
+          GARMIN_PERSONAL_API_KEY: ${{ secrets.GARMIN_PERSONAL_API_KEY }}
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          GARMIN_TOKEN_DIR: ${{ runner.temp }}/garmin-tokens
+          AUTO_PUSH: ${{ vars.GARMIN_AUTO_PUSH }}
+          NO_ADAPT: ${{ inputs.no_adapt }}
+        run: |
+          args=(--data-dir . --summary "$RUNNER_TEMP/weekly.md")
+          if [ "$AUTO_PUSH" = "true" ]; then args+=(--auto-push); fi
+          if [ "$NO_ADAPT" = "true" ]; then args+=(--no-adapt); fi
+          status=0
+          garmin-coach-weekly "${args[@]}" || status=$?
+          cat "$RUNNER_TEMP/weekly.md" >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      # Plan changes and Garmin workout ids are saved even when a step failed.
+      - name: Save the plan to this repository
+        if: ${{ always() }}
+        run: |
+          git config user.name "garmin-coach-weekly"
+          git config user.email "garmin-coach-weekly@users.noreply.github.com"
+          git add -A goals plans
+          if ! git diff --cached --quiet; then
+            git commit -m "Weekly coach: plan update $(date -u +%F)"
+            git push
+          fi
+
+      - name: Open the weekly issue
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ job.status }}
+        run: |
+          if [ -f "$RUNNER_TEMP/weekly.md" ]; then
+            gh issue create --title "Settimana del $(date -u +%F) — check-in ($RESULT)" \
+              --body-file "$RUNNER_TEMP/weekly.md"
+          fi

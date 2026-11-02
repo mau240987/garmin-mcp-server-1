@@ -30,7 +30,7 @@ on:
         options: ["1", "2", "3", "4"]
         default: "2"
       plan_id:
-        description: "Plan id (empty = latest plan of the latest goal)"
+        description: "Plan id (empty = the active plan of the next race)"
         type: string
         default: ""
 
