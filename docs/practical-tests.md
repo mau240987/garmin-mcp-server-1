@@ -4,8 +4,10 @@ L'ambiente di sviluppo non raggiunge Garmin: queste prove chiudono le verifiche 
 dice cosa fare, cosa aspettarsi e cosa riportare. Nessun test scrive su Garmin tranne **T6**, che
 è facoltativo e va autorizzato a parte.
 
-Prerequisiti: `pip install "git+https://github.com/mrosano1987/garmin-mcp-server-1.git"` (o
-`pip install .` da un clone) e la chiave Personal API in `GARMIN_PERSONAL_API_KEY`.
+Prerequisiti: da un clone aggiornato (`git pull`), nel virtualenv, `pip install -e .` e la
+chiave Personal API in `GARMIN_PERSONAL_API_KEY`. Usa `-e` (modalità editabile): con un semplice
+`pip install .` il pacchetto installato resta fermo alla versione di quel momento e gli script del
+repo non combaciano più (`unexpected keyword argument 'store'`).
 
 | Test | Cosa verifica | Scrive su Garmin? |
 |---|---|---|

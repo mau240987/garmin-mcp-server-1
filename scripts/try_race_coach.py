@@ -5,7 +5,7 @@ Runs the real MCP tools in-process (the same code paths an assistant uses), with
 forced off: nothing is created, scheduled or deleted on Garmin. Goals, plans and exports go to
 a separate folder (default ./race-coach-trial), not to your normal data directory.
 
-    pip install .                                  # from the repo
+    pip install -e .                               # from the repo (editable)
     export GARMIN_PERSONAL_API_KEY=...             # never paste it in chat
     python3 scripts/try_race_coach.py --race-type ultra --distance 100 \\
         --date 2027-05-29 --name Passatore --days 5 > race-coach-trial.md
@@ -18,18 +18,34 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import inspect
 import json
 import sys
 from pathlib import Path
 from typing import Any
 
-import anyio
-from mcp.client import Client
+STALE_INSTALL = (
+    "The installed garmin_coach_mcp package ({where}) is older than this script.\n"
+    "A plain `pip install .` copies a snapshot, so `git pull` does not update it.\n"
+    "From the repository root, in the same virtualenv, run:\n\n"
+    '    pip install -e ".[dev]"   # or: pip install -e .\n\n'
+    "then run this script again."
+)
 
-from garmin_coach_mcp.cli import build_router
-from garmin_coach_mcp.coach.storage import CoachStore
-from garmin_coach_mcp.config import Settings
-from garmin_coach_mcp.server import build_server
+try:
+    import anyio
+    from mcp.client import Client
+
+    import garmin_coach_mcp
+    from garmin_coach_mcp.cli import build_router
+    from garmin_coach_mcp.coach.storage import CoachStore
+    from garmin_coach_mcp.config import Settings
+    from garmin_coach_mcp.server import build_server
+except ImportError as exc:  # missing package or a pre-Race-Coach install
+    sys.exit(f"Cannot import the Race Coach server ({exc}).\n\n" + STALE_INSTALL.format(where="?"))
+
+if "store" not in inspect.signature(build_server).parameters:
+    sys.exit(STALE_INSTALL.format(where=Path(garmin_coach_mcp.__file__).parent))
 
 
 def parse_args() -> argparse.Namespace:
@@ -101,7 +117,7 @@ async def run(args: argparse.Namespace) -> int:
             result = await client.call_tool(tool, params)
             if result.is_error:
                 ok = False
-                text = result.content[0].text if result.content else "(no message)"
+                text = getattr(result.content[0], "text", "") if result.content else "(no message)"
                 print(f"**Error:** {text}\n")
                 if tool == "get_athlete_profile":
                     no_history = True
