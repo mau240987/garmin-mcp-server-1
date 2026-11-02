@@ -435,7 +435,14 @@ def build_server(
     ) -> PushWorkoutResult:
         workout = build_running_workout(name, steps, minutes * 60)
         # Raises GarminMCPError (not ToolError) so plan pushes can report per entry.
-        created = router.select(Capability.WORKOUT_CREATE).create_running_workout(workout)
+        # Create and schedule on the SAME backend: a workout id belongs to the backend
+        # that created it.
+        writer = (
+            router.select(Capability.WORKOUT_CREATE, Capability.WORKOUT_SCHEDULE)
+            if when is not None
+            else router.select(Capability.WORKOUT_CREATE)
+        )
+        created = writer.create_running_workout(workout)
         workout_id = _as_int(created.get("workoutId"))
         if workout_id is None:
             raise UpstreamServiceError(
@@ -448,7 +455,7 @@ def build_server(
         result = PushWorkoutResult(workout_id=workout_id, name=name, scheduled_date=when)
         if when is not None and workout_id is not None:
             try:
-                router.select(Capability.WORKOUT_SCHEDULE).schedule_workout(workout_id, when)
+                writer.schedule_workout(workout_id, when)
                 result.scheduled = True
             except GarminMCPError as exc:
                 # The workout exists; report the partial success instead of hiding it.
@@ -539,8 +546,11 @@ def build_server(
                 "No workouts given.", remediation="Pass a non-empty `workouts` array."
             ).to_tool_error()
 
-        for cap in (Capability.WORKOUT_CREATE, Capability.WORKOUT_SCHEDULE):
-            route(cap, lambda b: None)  # fail once, before the loop, if writes are impossible
+        # Fail once, before the loop, if no single backend can create and schedule.
+        try:
+            router.select(Capability.WORKOUT_CREATE, Capability.WORKOUT_SCHEDULE)
+        except GarminMCPError as exc:
+            raise exc.to_tool_error() from exc
 
         results: list[PlanEntryResult] = []
         for i, entry in enumerate(entries):

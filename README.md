@@ -77,6 +77,8 @@ python3 -m venv .venv && .venv/bin/pip install .
 > [`docs/api-coverage.md`](docs/api-coverage.md), risk R4). To keep using them, set
 > `GARMIN_ALLOW_UNOFFICIAL_WRITES=true`. Garmin's official Training API needs a business
 > (Starter) account: see [`docs/starter-requirements.md`](docs/starter-requirements.md).
+> The write tools stay listed while disabled, so the assistant can explain how to enable them;
+> calling them then reaches nothing on Garmin. Use `GARMIN_READ_ONLY=true` to hide them.
 
 ### Backends: official first
 

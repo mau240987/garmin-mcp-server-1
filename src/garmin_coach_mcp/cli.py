@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from collections.abc import Sequence
 
 from garmin_coach_mcp import __version__
-from garmin_coach_mcp.backends import BackendRouter, GarminBackend
+from garmin_coach_mcp.backends import BackendRouter, Capability, GarminBackend
 from garmin_coach_mcp.backends.official_personal import OfficialPersonalBackend
 from garmin_coach_mcp.backends.unofficial import UnofficialBackend
 from garmin_coach_mcp.client import GarminSession
@@ -52,6 +53,48 @@ def _interactive_login(settings: Settings) -> int:
     return 0
 
 
+def write_status(settings: Settings, router: BackendRouter) -> list[tuple[int, str]]:
+    """Startup messages describing whether workout writes are possible, and why."""
+    if settings.read_only:
+        return [(logging.INFO, "Read-only mode: write tools are not registered.")]
+    if router.can(Capability.WORKOUT_CREATE):
+        writer = router.select(Capability.WORKOUT_CREATE)
+        if writer.official:
+            return [(logging.INFO, f"Workout writes use the official {writer.name} backend.")]
+        if not settings.has_unofficial_session:
+            return [
+                (
+                    logging.WARNING,
+                    "GARMIN_ALLOW_UNOFFICIAL_WRITES=true but no unofficial Garmin login is "
+                    "configured (GARMIN_EMAIL/GARMIN_PASSWORD or --login): writes will fail "
+                    "until one is.",
+                )
+            ]
+        return [
+            (
+                logging.WARNING,
+                "Unofficial workout writes are ENABLED (GARMIN_ALLOW_UNOFFICIAL_WRITES=true): "
+                "they use Garmin Connect's internal endpoints with your credentials "
+                "(see docs/api-coverage.md, risk R4).",
+            )
+        ]
+    if settings.allow_unofficial_writes:
+        return [
+            (
+                logging.WARNING,
+                "GARMIN_ALLOW_UNOFFICIAL_WRITES=true but no unofficial Garmin login is "
+                "configured (GARMIN_EMAIL/GARMIN_PASSWORD or --login): workout writes are "
+                "unavailable.",
+            )
+        ]
+    return [
+        (
+            logging.INFO,
+            "Workout writes are disabled; set GARMIN_ALLOW_UNOFFICIAL_WRITES=true to enable.",
+        )
+    ]
+
+
 def build_router(settings: Settings) -> BackendRouter:
     """Official Personal backend when a key is set; unofficial backend when it has a session
     (or when nothing else is configured, so errors keep explaining how to log in)."""
@@ -93,13 +136,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings.read_only,
         ",".join(b.name for b in router.backends),
     )
-    if router.allow_unofficial_writes and router.has_unofficial:
-        log.warning(
-            "Unofficial workout writes are ENABLED (GARMIN_ALLOW_UNOFFICIAL_WRITES=true): they use "
-            "Garmin Connect's internal endpoints with your credentials (see docs, risk R4)."
-        )
-    elif not settings.read_only:
-        log.info("Workout writes are disabled; set GARMIN_ALLOW_UNOFFICIAL_WRITES=true to enable.")
+    for level, message in write_status(settings, router):
+        log.log(level, "%s", message)
     if args.transport == "stdio":
         app.run(transport="stdio")
     else:

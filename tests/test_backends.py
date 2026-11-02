@@ -699,3 +699,89 @@ def test_write_flag_from_env(tmp_path: Path) -> None:
     assert not build_router(Settings.from_env(env)).allow_unofficial_writes
     on = build_router(Settings.from_env({**env, "GARMIN_ALLOW_UNOFFICIAL_WRITES": "true"}))
     assert on.allow_unofficial_writes and on.can(Capability.WORKOUT_CREATE)
+
+
+# ------------------------------------------------- A3/A4 review: messages and same writer
+
+
+def _write_status(tmp_path: Path, **env: str) -> list[tuple[int, str]]:
+    from garmin_coach_mcp.cli import write_status
+
+    settings = Settings.from_env({"GARMIN_TOKEN_DIR": str(tmp_path / "t"), **env})
+    return write_status(settings, build_router(settings))
+
+
+CREDS = {"GARMIN_EMAIL": "a@b.invalid", "GARMIN_PASSWORD": "p"}
+
+
+def test_write_status_messages(tmp_path: Path) -> None:
+    import logging
+
+    on = {"GARMIN_ALLOW_UNOFFICIAL_WRITES": "true"}
+    key = {"GARMIN_PERSONAL_API_KEY": "k"}
+    cases = {
+        "creds, flag off": (_write_status(tmp_path, **CREDS), logging.INFO, "disabled"),
+        "creds, flag on": (_write_status(tmp_path, **CREDS, **on), logging.WARNING, "ENABLED"),
+        "key only, flag on": (
+            _write_status(tmp_path, **key, **on),
+            logging.WARNING,
+            "no unofficial",
+        ),
+        "nothing, flag on": (_write_status(tmp_path, **on), logging.WARNING, "no unofficial"),
+        "read-only + flag": (
+            _write_status(tmp_path, **CREDS, **on, GARMIN_READ_ONLY="true"),
+            logging.INFO,
+            "Read-only",
+        ),
+    }
+    for name, (msgs, level, text) in cases.items():
+        assert len(msgs) == 1, name
+        assert msgs[0][0] == level and text in msgs[0][1], (name, msgs)
+
+
+def test_write_hint_personal_key_only_with_flag_on(official: OfficialPersonalBackend) -> None:
+    router = BackendRouter([official], allow_unofficial_writes=True)
+    with pytest.raises(CapabilityUnavailableError) as info:
+        router.select(Capability.WORKOUT_CREATE)
+    text = str(info.value)
+    assert "are enabled" in text and "GARMIN_EMAIL" in text and "not the assistant" in text
+    assert "set GARMIN_ALLOW_UNOFFICIAL_WRITES" not in text
+
+
+def test_write_hint_mentions_login_when_flag_off(unofficial: UnofficialBackend) -> None:
+    with pytest.raises(CapabilityUnavailableError) as info:
+        BackendRouter([unofficial]).select(Capability.WORKOUT_DELETE)
+    text = str(info.value)
+    assert "GARMIN_ALLOW_UNOFFICIAL_WRITES=true" in text and "--login" in text
+    assert "not the assistant" in text
+
+
+def test_create_and_schedule_use_the_same_backend(
+    unofficial: UnofficialBackend, fake: FakeGarmin
+) -> None:
+    """A partially implemented Starter (create only) must not split create/schedule."""
+    from garmin_coach_mcp.backends.official_starter import OfficialStarterBackend
+
+    class CreateOnlyStarter(OfficialStarterBackend):
+        created = 0
+
+        def capabilities(self) -> frozenset[Capability]:
+            return frozenset({Capability.WORKOUT_CREATE})
+
+        def create_running_workout(self, workout: Any) -> dict[str, Any]:
+            CreateOnlyStarter.created += 1
+            return {"workoutId": 1}
+
+    router = BackendRouter([CreateOnlyStarter(), unofficial], allow_unofficial_writes=True)
+    assert router.select(Capability.WORKOUT_CREATE, Capability.WORKOUT_SCHEDULE) is unofficial
+    app = build_server(router, sleep=lambda _s: None)
+    steps = [{"type": "run", "duration_value": 600}]
+    out = call(app, "push_workout", {"name": "x", "steps": steps, "schedule_date": "2026-11-05"})
+    assert out["scheduled"] is True and CreateOnlyStarter.created == 0
+    assert [c[0] for c in fake.calls if c[0] != "login"] == [
+        "upload_running_workout",
+        "schedule_workout",
+    ]
+    # Unscheduled creation may use the create-only backend.
+    out = call(app, "push_workout", {"name": "y", "steps": steps})
+    assert CreateOnlyStarter.created == 1

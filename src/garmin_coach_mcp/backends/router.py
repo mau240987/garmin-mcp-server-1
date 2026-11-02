@@ -70,41 +70,54 @@ class BackendRouter:
             return self.allow_unofficial_writes
         return not self.has_official or self.allow_unofficial_reads
 
-    def select(self, cap: Capability) -> GarminBackend:
+    def select(self, cap: Capability, *also: Capability) -> GarminBackend:
+        """Backend for `cap`. With `also`, one backend that serves ALL the capabilities, so
+        e.g. a workout is scheduled by the same backend that created it."""
+        caps = frozenset((cap, *also))
         for backend in self.backends:
-            if backend.official and cap in backend.capabilities():
+            if backend.official and caps <= backend.capabilities():
                 return backend
-        if self._unofficial_allowed(cap):
+        if all(self._unofficial_allowed(c) for c in caps):
             for backend in self.backends:
-                if not backend.official and cap in backend.capabilities():
+                if not backend.official and caps <= backend.capabilities():
                     return backend
-        hint = self._write_hint() if cap in WRITE_CAPABILITIES else self._read_hint(cap)
+        missing = sorted(c.value for c in caps)
+        hint = (
+            self._write_hint()
+            if caps & WRITE_CAPABILITIES
+            else self._read_hint(next(iter(sorted(caps))))
+        )
         raise CapabilityUnavailableError(
-            f"No configured Garmin backend may provide '{cap.value}'.",
-            remediation=hint or "Configure a backend that offers it (see docs/api-coverage.md).",
+            f"No configured Garmin backend may provide {', '.join(repr(m) for m in missing)}.",
+            remediation=hint,
         )
 
     def _write_hint(self) -> str:
-        if self.has_unofficial:
-            how = (
-                "the athlete (not the assistant) can enable it by setting "
-                "GARMIN_ALLOW_UNOFFICIAL_WRITES=true and restarting the server"
+        login = "a Garmin login (GARMIN_EMAIL/GARMIN_PASSWORD or `garmin-coach-mcp --login`)"
+        if self.allow_unofficial_writes and not self.has_unofficial:
+            return (
+                "Unofficial workout writes are enabled (GARMIN_ALLOW_UNOFFICIAL_WRITES=true) but "
+                f"no unofficial backend is configured: the athlete (not the assistant) must add "
+                f"{login} and restart the server. {_WRITE_FALLBACK}"
             )
-        else:
-            how = (
-                "the athlete can configure it (GARMIN_EMAIL/GARMIN_PASSWORD) and set "
-                "GARMIN_ALLOW_UNOFFICIAL_WRITES=true"
-            )
+        how = (
+            "the athlete (not the assistant) can enable it by setting "
+            f"GARMIN_ALLOW_UNOFFICIAL_WRITES=true (it also needs {login}) and restarting the "
+            "server"
+        )
         return f"{_WRITE_WHAT}; {how}. See docs/api-coverage.md (risk R4). {_WRITE_FALLBACK}"
 
     def _read_hint(self, cap: Capability) -> str:
         what = _READ_WHAT.get(cap, f"'{cap.value}' is not offered by the configured backends")
         if self.has_unofficial:
-            how = "set GARMIN_ALLOW_UNOFFICIAL_READS=true (unofficial access)"
+            how = (
+                "the athlete (not the assistant) can set GARMIN_ALLOW_UNOFFICIAL_READS=true "
+                "(unofficial access)"
+            )
         else:
             how = (
-                "configure the unofficial backend (GARMIN_EMAIL/GARMIN_PASSWORD) and set "
-                "GARMIN_ALLOW_UNOFFICIAL_READS=true"
+                "the athlete (not the assistant) can configure the unofficial backend "
+                "(GARMIN_EMAIL/GARMIN_PASSWORD) and set GARMIN_ALLOW_UNOFFICIAL_READS=true"
             )
         return f"{what}; or {how}. See docs/api-coverage.md."
 

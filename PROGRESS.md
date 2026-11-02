@@ -78,3 +78,11 @@ router policy correct in all four configurations; unofficial-only behaviour unch
 7. Unreadable token directory no longer crashes startup.
 Also found while fixing: retry backoff ignored the test patch (default arg bound at import), so
 tests really slept; suite now 126 tests in ~3 s.
+
+## Independent review of A3+A4 — findings and fixes
+
+No path reaches a Garmin write (or even a login) when writes are disabled; router matrix
+correct. Fixed: accurate messages when the write flag is on but no unofficial login exists;
+no "writes ENABLED" startup warning in read-only mode or without a login; every remediation
+says the athlete (not the assistant) changes settings and mentions the login; create and
+schedule now always use the same backend (guards a future partial Starter implementation).
