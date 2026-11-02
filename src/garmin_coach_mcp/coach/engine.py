@@ -22,6 +22,11 @@ Volumes, long runs and progression are always computed from what is actually pla
 See docs/plan-engine.md for the full list (R2b, R4b).
 R8 Short preparations, empty history and big volume gaps produce explicit warnings; the
    engine never raises volume faster than R2 to "catch up".
+R12 Variety (not beginners, not ultras, loading weeks only, never in the first plan week):
+   in base/build every 2nd loading week the quality session is a fartlek; on the other loading
+   weeks the long run has a faster part (steady finish in base/build, goal-pace finish in build
+   or race-pace blocks in the specific phase for half/marathon). In the base phase a week
+   never has both. Volumes are unchanged: only how part of the same kilometres is run.
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ from garmin_coach_mcp.backends.base import GARMIN_DERIVED_ATTRIBUTION
 from garmin_coach_mcp.coach.models import (
     AthleteBaseline,
     Level,
+    LongVariant,
     Phase,
     PlannedSession,
     PlanWeek,
@@ -40,9 +46,10 @@ from garmin_coach_mcp.coach.models import (
     SessionKind,
     TrainingPlan,
 )
+from garmin_coach_mcp.coach.sessions import fartlek_pattern
 from garmin_coach_mcp.formatting import format_pace
 
-ENGINE_VERSION = "1.1.0"
+ENGINE_VERSION = "1.2.0"
 
 PROGRESSION = 1.10
 RECOVERY_EVERY = 4
@@ -127,6 +134,13 @@ DAY_PATTERNS: dict[int, list[int]] = {
 #: Preferred quality days (Sunday-long layout): Tuesday first, then Thursday.
 QUALITY_DAYS = [1, 3]
 
+#: R12 variety. Faster part of a long run: share of the long run and cap (km) per phase.
+VARIETY_MIN_LONG_KM = 10.0
+STEADY_FINISH = {Phase.BASE: (0.15, 4.0), Phase.BUILD: (0.25, 8.0)}
+RACE_PACE_LONG = (0.30, 10.0)  # specific phase, half/marathon: share, cap
+RACE_PACE_BLOCKS = 2
+MIN_FAST_KM = 2.0
+
 
 def _r(km: float) -> float:
     return round(km / ROUND_KM) * ROUND_KM
@@ -179,12 +193,31 @@ def _quality_count(phase: Phase, level: Level, days: int, recovery: bool) -> int
     return 1
 
 
+def _fartlek(km: float) -> tuple[SessionKind, str, str]:
+    reps, on_s, off_s = fartlek_pattern(km)
+    on = f"{on_s // 60} min" if on_s >= 60 else f"{on_s} s"
+    return (
+        SessionKind.FARTLEK,
+        "Z3-Z4",
+        f"Fartlek: {reps}x{on} brisk (Z4) / {off_s // 60} min easy jog, inside an easy run.",
+    )
+
+
 def _quality_session(
-    phase: Phase, dclass: str, goal: RaceGoal, level: Level, slot: int
+    phase: Phase,
+    dclass: str,
+    goal: RaceGoal,
+    level: Level,
+    slot: int,
+    *,
+    km: float = 0.0,
+    fartlek: bool = False,
 ) -> tuple[SessionKind, str, str]:
     """(kind, zone, description) for a quality session."""
     rp = goal.race_pace_s_per_km
     rp_txt = f" at goal race pace ~{format_pace(rp)}" if rp else " at goal race effort"
+    if fartlek and slot == 0 and phase in (Phase.BASE, Phase.BUILD):
+        return _fartlek(km)
     if phase is Phase.BASE:
         return SessionKind.STRIDES, "Z2", "Easy run with 6x20 s relaxed strides at the end."
     if phase is Phase.TAPER:
@@ -205,6 +238,48 @@ def _quality_session(
     if dclass == "marathon":
         return SessionKind.RACE_PACE, "Z3", f"10-14 km continuous{rp_txt} inside an easy run."
     return SessionKind.TEMPO, "Z3", "Steady 60-90 min at ultra effort; practise fuelling."
+
+
+def _long_variant(
+    phase: Phase, dclass: str, goal: RaceGoal, long_km: float
+) -> tuple[LongVariant, float, int, str, str] | None:
+    """(variant, fast km, blocks, zone, description) of a long run with a faster part (R12)."""
+    rp = goal.race_pace_s_per_km
+    if phase is Phase.SPECIFIC and dclass in ("half", "marathon") and rp:
+        share, cap = RACE_PACE_LONG
+        blocks = RACE_PACE_BLOCKS
+        fast = _r(min(cap, long_km * share) / blocks) * blocks  # whole half-km blocks
+        if fast < MIN_FAST_KM * blocks:
+            return None
+        return (
+            LongVariant.RACE_PACE,
+            fast,
+            blocks,
+            "Z2 + Z3",
+            f"Long run with {blocks}x{fast / blocks:g} km at goal race pace ~{format_pace(rp)} "
+            "(1 km easy between), the rest easy.",
+        )
+    if phase not in STEADY_FINISH:
+        return None
+    share, cap = STEADY_FINISH[phase]
+    fast = _r(min(cap, long_km * share))
+    if fast < MIN_FAST_KM:
+        return None
+    if phase is Phase.BUILD and dclass == "marathon" and rp:
+        return (
+            LongVariant.RACE_PACE,
+            fast,
+            1,
+            "Z2 + Z3",
+            f"Long run, the last {fast:g} km at goal marathon pace ~{format_pace(rp)}.",
+        )
+    return (
+        LongVariant.PROGRESSIVE,
+        fast,
+        1,
+        "Z2 + Z3",
+        f"Progressive long run: easy, then the last {fast:g} km steady (Z3, comfortably hard).",
+    )
 
 
 def _session(
@@ -266,6 +341,9 @@ def _layout_week(
     dclass: str,
     recovery: bool,
     easy_pace: float | None,
+    variety: bool = False,
+    fartlek: bool = False,
+    long_variant: bool = False,
 ) -> tuple[list[PlannedSession], bool]:
     """Sessions of a normal (non-race) week. Returns (sessions, volume_was_capped)."""
     shift = goal.long_run_day - 6
@@ -321,10 +399,23 @@ def _layout_week(
                 desc = "Long run; last 20-30 min at goal marathon effort if feeling good."
             if dclass == "ultra":
                 desc = "Long run on similar terrain; walk the climbs, practise fuelling."
-            sessions.append(_session(date, SessionKind.LONG, long_km, "Z2", desc, easy_pace))
+            variant = (
+                _long_variant(phase, dclass, goal, long_km)
+                if long_variant and long_km >= VARIETY_MIN_LONG_KM
+                else None
+            )
+            if variant is None and variety and dclass != "ultra":
+                desc = "Long run, easy and conversational."  # R12: the easy week of the pair
+            long_s = _session(date, SessionKind.LONG, long_km, "Z2", desc, easy_pace)
+            if variant is not None:
+                long_s.long_variant, long_s.fast_km, long_s.fast_blocks = variant[:3]
+                long_s.zone, long_s.description = variant[3], variant[4]
+            sessions.append(long_s)
         elif d in q_days:
             slot = q_days.index(d)
-            kind, zone, desc = _quality_session(phase, dclass, goal, level, slot)
+            kind, zone, desc = _quality_session(
+                phase, dclass, goal, level, slot, km=q_km[slot], fartlek=fartlek
+            )
             sessions.append(_session(date, kind, q_km[slot], zone, desc, None))
         elif d == medium_long_day:
             sessions.append(
@@ -395,6 +486,7 @@ def _race_week(
 
 
 _HARD = (
+    SessionKind.FARTLEK,
     SessionKind.LONG,
     SessionKind.MEDIUM_LONG,
     SessionKind.TEMPO,
@@ -506,6 +598,9 @@ def build_plan(
     reduced_days: list[int] = []
     resumed: list[int] = []
     protected = 0
+    # R12: variety for non-beginners on loading weeks; alternates by loading-week count.
+    variety = level is not Level.BEGINNER and dclass != "ultra"
+    loading_count = 0
 
     for i, phase in enumerate(phases):
         monday = first_monday + dt.timedelta(weeks=i)
@@ -547,6 +642,9 @@ def build_plan(
                         best_long * RESUME_FACTOR[min(gap_weeks, 2)], MIN_EASY_KM * 1.5
                     )
                     long_km = min(long_km, long_limit)
+            if phase is not Phase.TAPER and not recovery:
+                loading_count += 1
+            vary = variety and i > 0 and phase is not Phase.TAPER and not recovery
             days = _days_for_volume(days_req, km, long_km)
             if days < days_req and phase is not Phase.TAPER:
                 reduced_days.append(i + 1)
@@ -562,6 +660,9 @@ def build_plan(
                 dclass=dclass,
                 recovery=recovery,
                 easy_pace=easy_pace,
+                variety=variety,
+                fartlek=vary and loading_count % 2 == 0,
+                long_variant=vary and loading_count % 2 == 1,
             )
             if capped and phase is not Phase.TAPER:
                 capped_weeks.append(i + 1)

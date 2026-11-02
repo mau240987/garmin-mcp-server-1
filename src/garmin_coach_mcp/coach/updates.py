@@ -39,6 +39,7 @@ HARD_KINDS = frozenset(
         SessionKind.TEMPO,
         SessionKind.INTERVALS,
         SessionKind.RACE_PACE,
+        SessionKind.FARTLEK,
     }
 )
 MIN_SESSION_KM = 2.0
@@ -232,12 +233,16 @@ def apply_changes(
             s = week.sessions[i]
             _editable(s, today)
             _retire(new, s)
+            # A long run keeps its distance and loses only its faster part (R12).
+            long_run = s.kind is SessionKind.LONG
             week.sessions[i] = PlannedSession(
                 date=s.date,
-                kind=SessionKind.EASY,
-                distance_km=min(s.distance_km, EASY_MAX_KM[dclass]),
+                kind=SessionKind.LONG if long_run else SessionKind.EASY,
+                distance_km=s.distance_km if long_run else min(s.distance_km, EASY_MAX_KM[dclass]),
                 zone="Z2",
-                description="Easy run, conversational pace (Z2).",
+                description="Long run, easy and conversational."
+                if long_run
+                else "Easy run, conversational pace (Z2).",
                 pace_hint=s.pace_hint
                 or (
                     f"{format_pace(new.easy_pace)} - {format_pace(new.easy_pace + 30)} (easy)"

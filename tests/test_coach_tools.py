@@ -400,7 +400,12 @@ def test_apply_plan_update_operations(app: MCPServer, store: CoachStore) -> None
     assert all(s.date.isoformat() != easy["date"] for s in saved.weeks[1].sessions)
     # moving a long run next to another hard session is refused
     hard_neighbour = next(
-        (s for s in week2["sessions"] if s["kind"] in ("tempo", "intervals", "easy_strides")), None
+        (
+            s
+            for s in week2["sessions"]
+            if s["kind"] in ("tempo", "intervals", "easy_strides", "fartlek")
+        ),
+        None,
     )
     assert long_ and hard_neighbour is not None
 
@@ -793,3 +798,30 @@ def test_make_easy_keeps_an_easy_pace(app: MCPServer, store: CoachStore) -> None
     plan = store.get_plan(out["plan_id"])
     sess = next(s for w in plan.weeks for s in w.sessions if s.date.isoformat() == quality["date"])
     assert sess.kind.value == "easy" and sess.pace_hint and "(easy)" in sess.pace_hint
+
+
+def test_variety_sessions_make_easy_and_fit(app: MCPServer, store: CoachStore) -> None:
+    """R12: a long run with a faster part becomes an easy long run of the same distance, and
+    fartlek / variant long runs export as valid FIT workouts."""
+    from fit_tool.fit_file import FitFile
+
+    plan = setup_plan(app)
+    sessions = [s for w in plan["plan"]["weeks"] for s in w["sessions"]]
+    variant = next(s for s in sessions if s.get("long_variant"))
+    fartlek = next(s for s in sessions if s["kind"] == "fartlek")
+    upd = call(
+        app, "apply_plan_update", {"changes": [{"op": "make_easy", "date": variant["date"]}]}
+    )
+    assert upd["saved"]
+    saved = store.get_plan(plan["plan_id"])
+    easy_long = next(s for w in saved.weeks for s in w.sessions if str(s.date) == variant["date"])
+    assert easy_long.kind.value == "long" and easy_long.long_variant is None
+    assert easy_long.distance_km == variant["distance_km"]
+    for s in (fartlek, next(s for s in sessions if s.get("long_variant") and s is not variant)):
+        fit = call(
+            app, "export_plan", {"format": "fit", "from_date": s["date"], "to_date": s["date"]}
+        )
+        zf = zipfile.ZipFile(io.BytesIO(Path(fit["path"]).read_bytes()))
+        names = [n for n in zf.namelist() if n.endswith(".fit")]
+        assert len(names) == 1
+        assert FitFile.from_bytes(zf.read(names[0])).records  # CRC and structure are valid

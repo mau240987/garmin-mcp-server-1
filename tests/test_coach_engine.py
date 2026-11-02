@@ -13,11 +13,13 @@ from garmin_coach_mcp.coach.engine import (
     LONG_RUN_STEP_KM,
     MAX_PLAN_WEEKS,
     MIN_EASY_KM,
+    MIN_FAST_KM,
     MIN_WEEK_KM,
     PROGRESSION,
     RACE_PROTECT_DAYS,
     RECOVERY_EVERY,
     RECOVERY_FACTOR,
+    STEADY_FINISH,
     _distance_class,
     build_plan,
     infer_level,
@@ -25,11 +27,14 @@ from garmin_coach_mcp.coach.engine import (
 from garmin_coach_mcp.coach.models import (
     AthleteBaseline,
     Level,
+    LongVariant,
     Phase,
     RaceGoal,
     SessionKind,
     TrainingPlan,
 )
+from garmin_coach_mcp.coach.sessions import session_steps
+from garmin_coach_mcp.models import RepeatStep
 
 MONDAY = dt.date(2026, 11, 2)
 TOL = 0.51  # one rounding step (0.5 km)
@@ -108,7 +113,12 @@ def check_invariants(plan: TrainingPlan, goal: RaceGoal, start: dt.date) -> None
                 assert s.distance_km <= max(EASY_MAX_KM[dclass], MIN_EASY_KM) + TOL
                 if w.long_run_km:
                     assert s.distance_km <= w.long_run_km + TOL, (w.index, s)
-            if s.kind in (SessionKind.TEMPO, SessionKind.INTERVALS, SessionKind.RACE_PACE):
+            if s.kind in (
+                SessionKind.TEMPO,
+                SessionKind.INTERVALS,
+                SessionKind.RACE_PACE,
+                SessionKind.FARTLEK,
+            ):
                 assert not w.long_run_km or s.distance_km <= w.long_run_km + TOL
     shortened = {
         w.index
@@ -163,7 +173,52 @@ def check_invariants(plan: TrainingPlan, goal: RaceGoal, start: dt.date) -> None
             if w.phase is Phase.BASE:
                 assert not q
             assert len([s for s in q if s.kind is not SessionKind.STRIDES]) <= 1
+    check_variety(plan, goal)
     assert plan.notes and "not medical advice" in plan.notes[0]
+
+
+def _step_km(steps: list) -> float:
+    km = 0.0
+    for st in steps:
+        if isinstance(st, RepeatStep):
+            km += st.repeat_count * _step_km(st.steps)
+        elif st.duration_type == "distance":
+            km += st.duration_value / 1000
+    return km
+
+
+def check_variety(plan: TrainingPlan, goal: RaceGoal) -> None:
+    """R12: fartlek and long-run variants only where allowed, and well-formed."""
+    dclass = _distance_class(goal.distance_km)
+    allowed = plan.level is not Level.BEGINNER and dclass != "ultra"
+    for w in plan.weeks:
+        hard_week = w.is_recovery or w.phase is Phase.TAPER or w.index == 1
+        fartleks = [s for s in w.sessions if s.kind is SessionKind.FARTLEK]
+        variants = [s for s in w.sessions if s.long_variant is not None]
+        if not allowed or hard_week:
+            assert not variants, (w.index, variants)
+            if plan.level is not Level.BEGINNER or w.phase is Phase.BASE:
+                assert not fartleks or not hard_week, (w.index, fartleks)
+        assert not (fartleks and variants), f"week {w.index}: fartlek and long variant together"
+        for s in variants:
+            assert s.kind is SessionKind.LONG
+            assert s.fast_km is not None and MIN_FAST_KM <= s.fast_km < s.distance_km
+            if s.long_variant is LongVariant.PROGRESSIVE:
+                share, cap = STEADY_FINISH[w.phase]
+                assert s.fast_km <= min(cap, share * s.distance_km) + TOL
+                assert s.fast_blocks == 1
+            else:
+                assert goal.race_pace_s_per_km is not None
+                assert s.fast_km <= 0.30 * s.distance_km + TOL and s.fast_km <= 10.0
+        for s in [*variants, *fartleks]:
+            steps = session_steps(s, plan.easy_pace, goal.race_pace_s_per_km)
+            if s.kind is SessionKind.LONG:  # same distance as planned, faster part included
+                assert abs(_step_km(steps) - s.distance_km) < 0.11, (s, _step_km(steps))
+            else:  # fartlek: distance steps + the timed block ~ the planned distance
+                reps = next(st for st in steps if isinstance(st, RepeatStep))
+                block_s = reps.repeat_count * sum(st.duration_value for st in reps.steps)
+                est = _step_km(steps) + block_s / (plan.easy_pace or 390.0)
+                assert abs(est - s.distance_km) <= 1.0 + TOL, (s, est)
 
 
 HARD = (
@@ -172,6 +227,7 @@ HARD = (
     SessionKind.TEMPO,
     SessionKind.INTERVALS,
     SessionKind.RACE_PACE,
+    SessionKind.FARTLEK,
 )
 
 
@@ -445,3 +501,127 @@ def test_race_tomorrow_without_history_is_flagged() -> None:
     plan = build_plan(goal, EMPTY, MONDAY)
     check_invariants(plan, goal, MONDAY)
     assert any("cannot prepare you" in w for w in plan.warnings)
+
+
+# ----------------------------------------------------------------- R12 variety
+
+PARIS_LIKE = AthleteBaseline(
+    weeks_analyzed=12,
+    recent_weekly_km=43.6,
+    max_weekly_km=61.6,
+    longest_run_km=42.6,
+    runs_per_week=3.1,
+    easy_pace_s_per_km=375,
+    from_garmin=True,
+)
+
+
+def _paris_goal(**kw: object) -> RaceGoal:
+    base: dict[str, object] = {
+        "race_type": "marathon",
+        "race_date": dt.date(2027, 4, 4),
+        "days_per_week": 3,
+        "target_time_s": 3 * 3600 + 59 * 60 + 59,
+    }
+    return RaceGoal(**{**base, **kw})
+
+
+def test_variety_marathon_three_days() -> None:
+    goal = _paris_goal()
+    start = dt.date(2026, 11, 9)
+    plan = build_plan(goal, PARIS_LIKE, start)
+    check_invariants(plan, goal, start)
+    sessions = [(w, s) for w in plan.weeks for s in w.sessions]
+    fartlek_phases = {w.phase for w, s in sessions if s.kind is SessionKind.FARTLEK}
+    assert fartlek_phases == {Phase.BASE, Phase.BUILD}
+    variants = {(w.phase, s.long_variant, s.fast_blocks) for w, s in sessions if s.long_variant}
+    assert (Phase.BASE, LongVariant.PROGRESSIVE, 1) in variants
+    assert (Phase.BUILD, LongVariant.RACE_PACE, 1) in variants  # marathon-pace finish
+    assert (Phase.SPECIFIC, LongVariant.RACE_PACE, 2) in variants
+    # Easy long runs remain: variety alternates, it does not replace them.
+    loading_longs = [
+        s
+        for w, s in sessions
+        if s.kind is SessionKind.LONG and not w.is_recovery and w.phase is not Phase.TAPER
+    ]
+    assert sum(s.long_variant is None for s in loading_longs) >= len(loading_longs) // 2
+    # Race-pace parts carry the goal pace (5:41/km, +10/-5 s) in the workout steps.
+    rp_long = next(s for _w, s in sessions if s.long_variant is LongVariant.RACE_PACE)
+    steps = session_steps(rp_long, plan.easy_pace, goal.race_pace_s_per_km)
+    paced = [
+        st
+        for st in [*steps, *(x for st in steps if isinstance(st, RepeatStep) for x in st.steps)]
+        if not isinstance(st, RepeatStep) and st.pace_low == "5:51"
+    ]
+    assert paced and all(st.pace_high == "5:36" for st in paced)
+
+
+def test_variety_is_deterministic_and_keeps_volumes_of_v11_rules() -> None:
+    goal = _paris_goal()
+    a = build_plan(goal, PARIS_LIKE, dt.date(2026, 11, 9))
+    b = build_plan(goal, PARIS_LIKE, dt.date(2026, 11, 9))
+    assert a.model_dump(exclude={"id", "created_at"}) == b.model_dump(exclude={"id", "created_at"})
+    # Same kilometres as a beginner-free plan of the same athlete: variety changes only how
+    # part of the distance is run, not the weekly volume or the long run.
+    plain = build_plan(goal.model_copy(update={"target_time_s": None}), PARIS_LIKE, a.start_date)
+    assert [w.target_km for w in a.weeks] == [w.target_km for w in plain.weeks]
+    assert [w.long_run_km for w in a.weeks] == [w.long_run_km for w in plain.weeks]
+
+
+@pytest.mark.parametrize("base_name", ["beginner", "empty"])
+def test_no_variety_for_beginners(base_name: str) -> None:
+    goal = RaceGoal(
+        race_type="half_marathon",
+        race_date=MONDAY + dt.timedelta(weeks=20, days=6),
+        days_per_week=3,
+        target_time_s=9000,
+    )
+    plan = build_plan(goal, BASELINES[base_name], MONDAY)
+    assert plan.level is Level.BEGINNER
+    assert not any(s.long_variant for w in plan.weeks for s in w.sessions)
+    assert not any(
+        s.kind is SessionKind.FARTLEK
+        for w in plan.weeks
+        if w.phase is Phase.BASE
+        for s in w.sessions
+    )
+
+
+def test_no_variety_for_ultras() -> None:
+    goal = RaceGoal(
+        race_type="ultra",
+        distance_km=100,
+        race_date=MONDAY + dt.timedelta(weeks=30),
+        days_per_week=5,
+    )
+    plan = build_plan(goal, ULTRA_RUNNER, MONDAY)
+    kinds = {s.kind for w in plan.weeks for s in w.sessions}
+    assert SessionKind.FARTLEK not in kinds
+    assert not any(s.long_variant for w in plan.weeks for s in w.sessions)
+
+
+def test_no_race_pace_long_without_a_target_time() -> None:
+    goal = _paris_goal(target_time_s=None)
+    plan = build_plan(goal, PARIS_LIKE, dt.date(2026, 11, 9))
+    variants = {s.long_variant for w in plan.weeks for s in w.sessions if s.long_variant}
+    assert variants == {LongVariant.PROGRESSIVE}
+
+
+@pytest.mark.parametrize(
+    "race_type,target",
+    [("marathon", 12600), ("half_marathon", 6300), ("10k", 2880), ("5k", 1380)],
+)
+@pytest.mark.parametrize("base_name", ["mid", "adv"])
+@pytest.mark.parametrize("days", [3, 4, 6])
+@pytest.mark.parametrize("weeks_out", [6, 18, 30])
+def test_invariants_with_target_times(
+    race_type: str, target: int, base_name: str, days: int, weeks_out: int
+) -> None:
+    goal = RaceGoal(
+        race_type=race_type,
+        race_date=MONDAY + dt.timedelta(weeks=weeks_out, days=6),
+        days_per_week=days,
+        target_time_s=target,
+    )
+    plan = build_plan(goal, BASELINES[base_name], MONDAY)
+    check_invariants(plan, goal, MONDAY)
