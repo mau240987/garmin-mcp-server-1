@@ -144,7 +144,7 @@ mentre non lo sarebbe se lo si volesse estendere allo stato nativo Garmin; `get_
 |---|---|---|---|
 | R1 | **Termini del Personal API** accettati alla creazione della chiave (testo leggibile solo da loggati) | **NON letto** | Da leggere dall'utente prima della Fase 2: in particolare eventuali clausole su invio dati a fornitori AI (Claude/ChatGPT/Gemini). |
 | R2 | Developer Program Agreement Rev. B — §15.10 (AI: trasparenza + consenso esplicito e revocabile), §6.4 (attribuzione), §5.2(o) (no esposizione a terzi via proprie API) | **NON verificato** (testo non pubblicamente raggiungibile dalle pagine lette) | Se confermato vale per Starter/Enterprise; per il Fase 1 single-user progettiamo comunque già consenso esplicito e attribuzione. Il server remoto multi-utente (Fase 2) ricadrebbe in §5.2(o). |
-| R3 | API Brand Guidelines: requisiti di attribuzione per display, schermate secondarie, **dati esportati e dati derivati** | Esistenza dei requisiti **confermata** [DOC]; dettaglio nel PDF scaricabile **non letto** | Ogni output del backend ufficiale ed export (`md/ics/fit`) e il profilo derivato devono riportare l'attribuzione Garmin. Testo esatto da prendere dal PDF. |
+| R3 | API Brand Guidelines (PDF V 6.30.2025, letto il 2026-11-02, scaricato su autorizzazione dell'utente): dati Garmin con attribuzione "Garmin [modello]" o "Garmin" se il modello non è fornito, vicino ai dati e mai nascosta; export con attribuzione ripetuta su ogni pagina; dati derivati (anche AI) con Garmin indicato come fonte, senza implicarne l'endorsement | **Verificato** [DOC] | Implementato: `sources[].attribution = "Garmin"` e riga "Data source: Garmin" sotto il titolo di ogni output (il modello del dispositivo non è esposto dagli endpoint usati). Per profilo e piani (C2/C3) e per gli export (C4): "Insights derived in part from Garmin device-sourced data." |
 | R4 | **Backend non ufficiale** (`garminconnect`): login con credenziali Garmin, endpoint interni | Fatto | Possibile violazione dei Termini d'uso di Garmin Connect [NON VERIFICATO], rischio blocco account, rotture frequenti: in questa sessione abbiamo osservato rotture reali (vedi §6). |
 | R5 | Personal = solo dati propri, no app commerciali multi-utente | [DOC] | Coerente con Fase 1 (ogni utente usa la propria chiave localmente). Esclude un servizio ospitato multi-utente basato su chiavi Personal. |
 | R6 | Starter "push only" (webhook) | [DOC] | Un backend Starter per le **letture** richiede un endpoint HTTPS pubblico che riceve i dati: incompatibile con un server stdio locale. Per le **scritture** (Training API) serve il flusso OAuth dell'utente e un'app business approvata. |
@@ -204,7 +204,11 @@ Alternative considerate:
 - Starter (A4): stub e requisiti in `docs/starter-requirements.md`; il router lo preferirà per
   le scritture appena dichiarerà le capacità.
 
-### Domande ancora aperte
+- 2026-11-02: autorizzati dall'utente il test di scrittura (V-1/V-2, da eseguire con
+  `scripts/verify_workout_write.py`) e la lettura del PDF delle Brand Guidelines (R3, chiuso).
+  Licenza confermata: AGPL-3.0.
+
+### Domande ancora aperte (storico)
 
 1. Approvi la **Strategia A** (o preferisci B come default)?
 2. Fallback non ufficiale per Training Readiness: **opt-in** come proposto, oppure eliminato?

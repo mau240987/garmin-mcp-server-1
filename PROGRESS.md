@@ -39,10 +39,10 @@ the legacy server did not start on a clean install (MCP SDK 2.x removed `mcp.ser
 
 - A2: token format and `Bearer` confirmed on the real API. Still unverified: pagination of
   `activities/search` beyond 100 results, `hrv/{date}` 204 on empty days, FIT download, rate limits.
-- Attribution text is a placeholder until the API Brand Guidelines PDF is reviewed (R3).
+- R3 closed: attribution follows the API Brand Guidelines PDF ("Garmin", shown under the heading).
 
-- V-1/V-2 (workout units and pace target) — see `docs/api-coverage.md` §6. Needs one authorized
-  write test on a real account.
+- V-1/V-2 (workout units and pace target) — write test authorized; run
+  `scripts/verify_workout_write.py` locally (sandbox cannot reach Garmin) and share the report.
 - CI on Python 3.12 has not been run locally (only 3.13 available in the dev sandbox).
 
 ## Independent review of H — findings and fixes

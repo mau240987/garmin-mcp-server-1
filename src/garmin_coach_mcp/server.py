@@ -171,9 +171,11 @@ def build_server(
             )
         return list(seen.values())
 
-    def footer(srcs: list[DataSource], notices: list[str]) -> list[str]:
-        lines = [f"Source: {s.attribution}" for s in srcs if s.attribution]
-        return lines + [f"Notice: {n}" for n in notices]
+    def with_attribution(lines: list[str], srcs: list[DataSource], notices: list[str]) -> str:
+        """Attribution right under the heading (API Brand Guidelines), notices at the end."""
+        labels = sorted({s.attribution for s in srcs if s.attribution})
+        head = [*lines[:1], f"Data source: {', '.join(labels)}"] if labels else lines[:1]
+        return "\n".join(head + lines[1:] + [f"Notice: {n}" for n in notices])
 
     # ------------------------------------------------------------------ read tools
 
@@ -217,7 +219,7 @@ def build_server(
         return ActivityList(
             count=len(items),
             activities=items,
-            text="\n".join(lines + footer(srcs, notices)),
+            text=with_attribution(lines, srcs, notices),
             sources=srcs,
             notices=notices,
         )
@@ -339,7 +341,7 @@ def build_server(
             lines.append("  No health data recorded for this date.")
         out.sources = sources(*used)
         out.notices = router.notices()
-        out.text = "\n".join(lines + footer(out.sources, out.notices))
+        out.text = with_attribution(lines, out.sources, out.notices)
         return out
 
     @app.tool(
@@ -379,7 +381,7 @@ def build_server(
             sources=sources(backend),
             notices=router.notices(),
         )
-        out.text = "\n".join(
+        out.text = with_attribution(
             [
                 f"Training status — last {days} days:",
                 f"• Total activities: {out.total_activities}",
@@ -388,8 +390,9 @@ def build_server(
                 f"• Total duration: {out.total_duration}",
                 f"• Avg pace: {avg or 'N/A'}",
                 *(_activity_line(r) for r in out.recent_runs),
-                *footer(out.sources, out.notices),
-            ]
+            ],
+            out.sources,
+            out.notices,
         )
         return out
 

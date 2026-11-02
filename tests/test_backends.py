@@ -480,7 +480,7 @@ def test_reads_go_official_and_carry_attribution(
     assert out["sources"] == [
         {"backend": "official-personal", "official": True, "attribution": GARMIN_ATTRIBUTION}
     ]
-    assert GARMIN_ATTRIBUTION in out["text"]
+    assert out["text"].splitlines()[1] == "Data source: Garmin"  # right under the heading
     details = call(app, "get_activity_details", {"activity_id": "9001"})
     assert details["summary"]["pace"] == "6:00/km"
     assert fake.calls == []  # unofficial backend never touched, not even a login
@@ -785,3 +785,10 @@ def test_create_and_schedule_use_the_same_backend(
     # Unscheduled creation may use the create-only backend.
     out = call(app, "push_workout", {"name": "y", "steps": steps})
     assert CreateOnlyStarter.created == 1
+
+
+def test_unofficial_data_is_attributed_too(unofficial: UnofficialBackend) -> None:
+    app = build_server(BackendRouter([unofficial]))
+    out = call(app, "get_training_status", {"days": 7})
+    assert out["sources"][0]["attribution"] == "Garmin"
+    assert out["text"].splitlines()[1] == "Data source: Garmin"

@@ -11,9 +11,13 @@ import datetime as dt
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
-#: Attribution attached to data served by an official backend. Placeholder wording until the
-#: Garmin API Brand Guidelines PDF is reviewed (docs/api-coverage.md, risk R3).
-GARMIN_ATTRIBUTION = "Data provided by Garmin Connect. Garmin is a trademark of Garmin Ltd."
+#: Garmin API Brand Guidelines (V 6.30.2025): device-sourced data carries a "Garmin [device
+#: model]" attribution, or "Garmin" when the API does not provide the model (the activity and
+#: health endpoints used here do not). Shown with the data, never buried in a footnote.
+GARMIN_ATTRIBUTION = "Garmin"
+#: Same guidelines, for analytics/AI output materially influenced by Garmin data (e.g. the
+#: athlete profile and training plans). Must not imply Garmin endorsement.
+GARMIN_DERIVED_ATTRIBUTION = "Insights derived in part from Garmin device-sourced data."
 
 
 class Capability(StrEnum):

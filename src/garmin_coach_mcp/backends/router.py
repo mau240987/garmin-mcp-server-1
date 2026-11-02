@@ -130,4 +130,5 @@ class BackendRouter:
 
     @staticmethod
     def attribution(backend: GarminBackend) -> str | None:
-        return GARMIN_ATTRIBUTION if backend.official else None
+        # Data is Garmin device-sourced whichever backend served it.
+        return GARMIN_ATTRIBUTION
