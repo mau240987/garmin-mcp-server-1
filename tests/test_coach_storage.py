@@ -29,8 +29,18 @@ def test_goal_defaults_and_validation() -> None:
     assert g.distance_km == pytest.approx(42.195) and g.race_type is RaceType.MARATHON
     assert g.race_pace_s_per_km == pytest.approx(17940 / 42.195)
     assert goal(race_type="10k").distance_km == 10.0
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="distance_km is required"):
         goal(race_type="ultra")  # ultra needs an explicit distance
+    with pytest.raises(ValidationError, match="does not match"):
+        goal(race_type="5k", distance_km=100)
+    with pytest.raises(ValidationError, match="plausible"):
+        goal(target_time_s=3600)  # 1:25/km marathon
+    with pytest.raises(ValidationError, match="plausible"):
+        goal(race_type="5k", target_time_s=72 * 3600)
+    with pytest.raises(ValidationError, match="longer than a marathon"):
+        goal(race_type="ultra", distance_km=30)
+    assert goal(race_type="10k", distance_km=10.4).distance_km == 10.4  # course variation ok
+    assert goal(race_type="other", distance_km=15).distance_km == 15
     with pytest.raises(ValidationError):
         goal(days_per_week=1)
     with pytest.raises(ValidationError):
@@ -107,3 +117,29 @@ def test_plan_summary_readable() -> None:
     assert lines[1] == "Insights derived in part from Garmin device-sourced data."
     assert "| 1 | 2026-11-02 | base |" in text and "RACE: Milano Marathon" in text
     assert "not medical advice" in text
+
+
+def test_store_undecodable_and_newer_files(tmp_path: Path) -> None:
+    from garmin_coach_mcp.errors import ConfigurationError
+
+    store = CoachStore(tmp_path)
+    good, bad, newer = goal(), goal(), goal()
+    for g in (good, bad, newer):
+        store.save_goal(g)
+    (tmp_path / "goals" / f"{bad.id}.json").write_bytes(b"\xff\xfe garbage")
+    data = (
+        (tmp_path / "goals" / f"{newer.id}.json")
+        .read_text()
+        .replace('"schema_version": 1', '"schema_version": 99')
+    )
+    (tmp_path / "goals" / f"{newer.id}.json").write_text(data)
+    assert [g.id for g in store.list_goals()] == [good.id]
+    with pytest.raises(ConfigurationError):
+        store.get_goal(bad.id)
+    with pytest.raises(ConfigurationError, match="newer version"):
+        store.get_goal(newer.id)
+
+
+def test_store_id_with_newline_rejected(tmp_path: Path) -> None:
+    with pytest.raises(NotFoundError, match="not a valid"):
+        CoachStore(tmp_path).get_goal("goal_0123456789ab\n")

@@ -22,6 +22,13 @@ class RaceType(StrEnum):
     OTHER = "other"
 
 
+#: Plausible goal paces (s/km): faster than a world record or slower than walking 100 km in
+#: ~33 h is almost certainly a typo in target_time.
+MIN_GOAL_PACE_S = 150
+MAX_GOAL_PACE_S = 1200
+#: Standard distances accept small course variations (e.g. a 10.3 km "10k").
+DISTANCE_TOLERANCE = 0.15
+
 #: Default distances; OTHER and ULTRA require an explicit distance_km.
 RACE_DISTANCE_KM: dict[RaceType, float] = {
     RaceType.K5: 5.0,
@@ -109,7 +116,33 @@ class RaceGoal(_Model):
                 return data
             if rt in RACE_DISTANCE_KM:
                 data = {**data, "distance_km": RACE_DISTANCE_KM[rt]}
+            elif rt is not None:
+                raise ValueError(
+                    f"distance_km is required for race_type '{rt.value}' (e.g. 100 for a 100 km)"
+                )
         return data
+
+    @model_validator(mode="after")
+    def _consistent(self) -> RaceGoal:
+        standard = RACE_DISTANCE_KM.get(self.race_type)
+        if standard and abs(self.distance_km - standard) > standard * DISTANCE_TOLERANCE:
+            raise ValueError(
+                f"distance_km {self.distance_km:g} does not match race_type "
+                f"'{self.race_type.value}' ({standard:g} km); use race_type 'other' or 'ultra'"
+            )
+        if (
+            self.race_type is RaceType.ULTRA
+            and self.distance_km <= RACE_DISTANCE_KM[RaceType.MARATHON]
+        ):
+            raise ValueError("an ultra must be longer than a marathon (42.195 km)")
+        if self.target_time_s is not None:
+            pace = self.target_time_s / self.distance_km
+            if not MIN_GOAL_PACE_S <= pace <= MAX_GOAL_PACE_S:
+                raise ValueError(
+                    f"target time gives {int(pace // 60)}:{int(pace % 60):02d}/km, outside the "
+                    "plausible 2:30-20:00/km: check target_time (H:MM:SS)"
+                )
+        return self
 
     @field_validator("constraints")
     @classmethod

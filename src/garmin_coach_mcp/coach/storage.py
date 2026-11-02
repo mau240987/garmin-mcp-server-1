@@ -6,6 +6,7 @@ os.replace) with owner-only permissions.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import tempfile
@@ -15,12 +16,16 @@ from typing import TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from garmin_coach_mcp.coach.models import RaceGoal, TrainingPlan
+from garmin_coach_mcp.coach.models import SCHEMA_VERSION, RaceGoal, TrainingPlan
 from garmin_coach_mcp.errors import ConfigurationError, NotFoundError, UpstreamServiceError
 
 _ID_RE = re.compile(r"^(goal|plan)_[0-9a-f]{12}$")
 
 M = TypeVar("M", bound=BaseModel)
+
+
+class _NewerSchemaError(Exception):
+    pass
 
 
 class CoachStore:
@@ -43,7 +48,7 @@ class CoachStore:
 
     @staticmethod
     def _check_id(object_id: str, prefix: str) -> None:
-        if not _ID_RE.match(object_id) or not object_id.startswith(prefix + "_"):
+        if not _ID_RE.fullmatch(object_id) or not object_id.startswith(prefix + "_"):
             raise NotFoundError(
                 f"'{object_id}' is not a valid {prefix} id.",
                 remediation=f"Use an id returned by the tools (it starts with '{prefix}_').",
@@ -58,6 +63,8 @@ class CoachStore:
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
                     fh.write(data)
+                    fh.flush()
+                    os.fsync(fh.fileno())  # durable before the rename
                 os.chmod(tmp, 0o600)
                 os.replace(tmp, target)
             except OSError as exc:
@@ -70,6 +77,20 @@ class CoachStore:
                 ) from exc
         return target
 
+    @staticmethod
+    def _migrate(kind: str, data: dict[str, object]) -> dict[str, object]:
+        """Upgrade older files to SCHEMA_VERSION. Version 1 is the first: nothing to do yet."""
+        return data
+
+    def _parse(self, kind: str, raw: str, model: type[M], path: Path) -> M:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("not a JSON object")
+        version = data.get("schema_version", 1)
+        if not isinstance(version, int) or version > SCHEMA_VERSION:
+            raise _NewerSchemaError(path)
+        return model.model_validate(self._migrate(kind, data))
+
     def _read(self, kind: str, object_id: str, model: type[M]) -> M:
         path = self.root / kind / f"{object_id}.json"
         try:
@@ -80,12 +101,23 @@ class CoachStore:
                 remediation=f"List saved {kind} or create a new one.",
                 cause=exc,
             ) from exc
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ConfigurationError(
+                f"Cannot read the saved {kind[:-1]} '{object_id}'.",
+                remediation=f"Check permissions and contents of {path}.",
+                cause=exc,
+            ) from exc
         try:
-            return model.model_validate_json(raw)
-        except ValidationError as exc:
+            return self._parse(kind, raw, model, path)
+        except _NewerSchemaError as exc:
+            raise ConfigurationError(
+                f"The saved {kind[:-1]} '{object_id}' was written by a newer version of this "
+                "server.",
+                remediation="Upgrade garmin-coach-mcp-server to read it.",
+            ) from exc
+        except (ValueError, ValidationError) as exc:
             raise UpstreamServiceError(
-                f"The saved {kind[:-1]} '{object_id}' is corrupted or from an incompatible "
-                "version.",
+                f"The saved {kind[:-1]} '{object_id}' is corrupted.",
                 remediation=f"Create it again; the damaged file is {path}.",
                 cause=exc,
             ) from exc
@@ -97,9 +129,9 @@ class CoachStore:
         out: list[M] = []
         for path in sorted(directory.glob("*.json")):
             try:
-                out.append(model.model_validate_json(path.read_text(encoding="utf-8")))
-            except (OSError, ValidationError):
-                continue  # a damaged file must not hide the others; it is reported on read
+                out.append(self._parse(kind, path.read_text(encoding="utf-8"), model, path))
+            except (OSError, ValueError, ValidationError, _NewerSchemaError):
+                continue  # a damaged/newer file must not hide the others; reported on read
         return out
 
     # -- goals --------------------------------------------------------------------------

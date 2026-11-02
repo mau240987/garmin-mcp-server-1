@@ -8,11 +8,16 @@ import itertools
 import pytest
 
 from garmin_coach_mcp.coach.engine import (
+    EASY_MAX_KM,
     LONG_CAP_KM,
     LONG_RUN_STEP_KM,
+    MAX_PLAN_WEEKS,
     MIN_EASY_KM,
+    MIN_WEEK_KM,
     PROGRESSION,
+    RACE_PROTECT_DAYS,
     RECOVERY_EVERY,
+    RECOVERY_FACTOR,
     _distance_class,
     build_plan,
     infer_level,
@@ -70,10 +75,14 @@ EMPTY = AthleteBaseline()
 def check_invariants(plan: TrainingPlan, goal: RaceGoal, start: dt.date) -> None:
     weeks = plan.weeks
     sessions = [s for w in weeks for s in w.sessions]
-    # R1: race is the last session, on the race date; nothing outside [start, race]
+    dclass = _distance_class(goal.distance_km)
+    blocked = set(goal.unavailable_dates)
+    eff_start = max(start, plan.start_date)
+    # R1/R10: calendar, bounded horizon, race last
+    assert len(weeks) <= MAX_PLAN_WEEKS
     assert sessions[-1].kind is SessionKind.RACE and sessions[-1].date == goal.race_date
     assert sum(s.kind is SessionKind.RACE for s in sessions) == 1
-    assert all(start <= s.date <= goal.race_date for s in sessions)
+    assert all(eff_start <= s.date <= goal.race_date for s in sessions)
     for w in weeks:
         assert w.start_date.weekday() == 0
         assert all(
@@ -82,84 +91,88 @@ def check_invariants(plan: TrainingPlan, goal: RaceGoal, start: dt.date) -> None
         dates = [s.date for s in w.sessions]
         assert len(dates) == len(set(dates)), "one session per day"
         assert len(w.sessions) <= goal.days_per_week + (1 if w is weeks[-1] else 0)
-        assert not set(dates) & set(goal.unavailable_dates) - {goal.race_date}
-        # weekly target is the sum of its sessions (race excluded)
+        assert not set(dates) & blocked - {goal.race_date}
+        assert all(s.distance_km > 0 for s in w.sessions)
         total = sum(s.distance_km for s in w.sessions if s.kind is not SessionKind.RACE)
-        assert abs(total - w.target_km) < 0.11
-    # R2: loading weeks progress at most 10% over the previous loading week (full weeks only)
-    loading = [w for w in weeks if w.phase is not Phase.TAPER and not w.is_recovery]
-    if not plan.baseline.is_empty and start.weekday() == 0 and loading:
-        assert (
-            loading[0].target_km
-            <= max(
-                plan.baseline.recent_weekly_km * PROGRESSION, goal.days_per_week * MIN_EASY_KM, 8
-            )
-            + TOL
-        )
-    full = loading if start.weekday() == 0 else loading[1:]
-    # Weeks shortened by unavailable dates are not a planned load: the next week resumes the
-    # planned progression, so they are left out of the comparison.
-    blocked = set(goal.unavailable_dates)
+        assert abs(total - w.target_km) < 0.11  # bookkeeping consistency
+    # R9: nothing long or hard in the protected days before the race
+    first_protected = goal.race_date - dt.timedelta(days=RACE_PROTECT_DAYS[dclass])
+    for s in sessions:
+        if first_protected <= s.date < goal.race_date:
+            assert s.kind not in HARD, (s.date, s.kind)
+    # R4b: easy runs are capped and never longer than the week's long run
+    for w in weeks[:-1]:
+        for s in w.sessions:
+            if s.kind is SessionKind.EASY:
+                assert s.distance_km >= MIN_EASY_KM - 0.01
+                assert s.distance_km <= max(EASY_MAX_KM[dclass], MIN_EASY_KM) + TOL
+                if w.long_run_km:
+                    assert s.distance_km <= w.long_run_km + TOL, (w.index, s)
+            if s.kind in (SessionKind.TEMPO, SessionKind.INTERVALS, SessionKind.RACE_PACE):
+                assert not w.long_run_km or s.distance_km <= w.long_run_km + TOL
     shortened = {
         w.index
         for w in weeks
         if any(w.start_date + dt.timedelta(days=d) in blocked for d in range(7))
     }
+    # R2: first full week never above the recent volume (min 8 km); <=10% between loading weeks
+    loading = [w for w in weeks if w.phase is not Phase.TAPER and not w.is_recovery]
+    if loading and not plan.baseline.is_empty:
+        cap1 = max(min(plan.baseline.recent_weekly_km, 1e9), MIN_WEEK_KM)
+        assert loading[0].target_km <= cap1 + TOL
+    full = loading if start.weekday() == 0 else loading[1:]
     for prev, cur in itertools.pairwise(full):
-        if prev.index in shortened or cur.index in shortened:
+        if prev.index in shortened or cur.index in shortened or cur.index - 1 in shortened:
             continue
         assert cur.target_km <= prev.target_km * PROGRESSION + TOL, (prev.index, cur.index)
-    # R3: no more than RECOVERY_EVERY-1 loading weeks in a row before the taper
+    # R3: recovery cadence and factor
     pre = [w for w in weeks if w.phase is not Phase.TAPER]
     run = 0
-    for w in pre[:-1]:  # the last pre-taper week may complete a block
+    for w in pre[:-1]:
         run = 0 if w.is_recovery else run + 1
         assert run <= RECOVERY_EVERY - 1
-    for w in weeks:
-        if w.is_recovery:
-            assert not any(
-                s.kind in (SessionKind.TEMPO, SessionKind.INTERVALS, SessionKind.RACE_PACE)
-                for s in w.sessions
-            )
-    # R4: long run cap and growth
-    cap = LONG_CAP_KM[_distance_class(goal.distance_km)][plan.level]
-    longs = [w.long_run_km for w in weeks]
-    assert max(longs) <= cap + TOL
+    prev_load = None
+    for w in pre:
+        if w.is_recovery and prev_load and prev_load.index not in shortened:
+            assert w.target_km <= prev_load.target_km * RECOVERY_FACTOR + TOL + MIN_EASY_KM
+            assert not any(s.kind in HARD[2:] for s in w.sessions)
+        if not w.is_recovery:
+            prev_load = w
+    # R4: long-run cap and growth (measured on planned long runs)
+    cap = LONG_CAP_KM[dclass][plan.level]
+    assert max(w.long_run_km for w in weeks) <= cap + TOL
     best = 0.0
     for w in weeks:
         if w.long_run_km and not w.is_recovery and w.phase is not Phase.TAPER and best:
             assert w.long_run_km <= best + LONG_RUN_STEP_KM + TOL
         best = max(best, w.long_run_km)
-    # R5: taper volumes decrease and stay below the peak; no long run in race week
+    # R5: taper volumes decrease and stay well under the loading peak
     taper = [w for w in weeks if w.phase is Phase.TAPER]
     assert taper and taper[-1] is weeks[-1]
     for prev, cur in itertools.pairwise(taper):
-        assert cur.target_km <= prev.target_km + TOL
-    assert all(w.target_km <= plan.peak_weekly_km + TOL for w in taper)
+        assert cur.target_km <= prev.target_km + TOL, (prev.index, cur.index)
+    # Compare with complete loading weeks only (a partial first week is not a planned peak).
+    peak_loading = max((w.target_km for w in full if w.index not in shortened), default=0.0)
+    if peak_loading:
+        assert all(w.target_km <= max(peak_loading * 0.85, MIN_WEEK_KM) + TOL for w in taper)
     assert weeks[-1].long_run_km == 0
-    # Easy runs respect the minimum (race week excluded: short shake-outs)
-    for w in weeks[:-1]:
-        for s in w.sessions:
-            if s.kind is SessionKind.EASY:
-                assert s.distance_km >= MIN_EASY_KM - 0.01
     # R7: beginners
     if plan.level is Level.BEGINNER:
         for w in weeks:
-            q = [
-                s
-                for s in w.sessions
-                if s.kind
-                in (
-                    SessionKind.TEMPO,
-                    SessionKind.INTERVALS,
-                    SessionKind.RACE_PACE,
-                    SessionKind.STRIDES,
-                )
-            ]
+            q = [s for s in w.sessions if s.kind in HARD[2:] or s.kind is SessionKind.STRIDES]
             if w.phase is Phase.BASE:
                 assert not q
             assert len([s for s in q if s.kind is not SessionKind.STRIDES]) <= 1
     assert plan.notes and "not medical advice" in plan.notes[0]
+
+
+HARD = (
+    SessionKind.LONG,
+    SessionKind.MEDIUM_LONG,
+    SessionKind.TEMPO,
+    SessionKind.INTERVALS,
+    SessionKind.RACE_PACE,
+)
 
 
 # ----------------------------------------------------------------- named brief cases
@@ -240,11 +253,20 @@ GOALS = [("5k", None), ("10k", None), ("half_marathon", None), ("marathon", None
 BASELINES = {"empty": EMPTY, "beginner": BEGINNER, "mid": MARATHON_5H, "adv": ADVANCED}
 
 
+BLOCKS = {
+    "none": [],
+    "one-day": [MONDAY + dt.timedelta(days=9)],
+    "two-weeks": [MONDAY + dt.timedelta(weeks=2, days=d) for d in range(14)],
+}
+
+
 @pytest.mark.parametrize("race_type,distance", GOALS)
 @pytest.mark.parametrize("base_name", list(BASELINES))
-@pytest.mark.parametrize("days", [2, 3, 4, 5, 6, 7])
-@pytest.mark.parametrize("weeks_out", [1, 3, 6, 12, 20, 30])
-@pytest.mark.parametrize("race_weekday", [0, 3, 6])
+@pytest.mark.parametrize("days", [2, 3, 5, 7])
+@pytest.mark.parametrize("weeks_out", [1, 3, 8, 20, 45])
+@pytest.mark.parametrize("race_weekday", [0, 5, 6])
+@pytest.mark.parametrize("long_day", [6, 2, 0])
+@pytest.mark.parametrize("start_offset", [0, 3])
 def test_invariants_matrix(
     race_type: str,
     distance: float | None,
@@ -252,10 +274,34 @@ def test_invariants_matrix(
     days: int,
     weeks_out: int,
     race_weekday: int,
+    long_day: int,
+    start_offset: int,
 ) -> None:
     race_date = MONDAY + dt.timedelta(weeks=weeks_out, days=race_weekday)
+    start = MONDAY + dt.timedelta(days=start_offset)
     goal = RaceGoal(
-        race_type=race_type, distance_km=distance, race_date=race_date, days_per_week=days
+        race_type=race_type,
+        distance_km=distance,
+        race_date=race_date,
+        days_per_week=days,
+        long_run_day=long_day,
+    )
+    plan = build_plan(goal, BASELINES[base_name], start)
+    check_invariants(plan, goal, start)
+
+
+@pytest.mark.parametrize("block", list(BLOCKS))
+@pytest.mark.parametrize("race_type,distance", GOALS)
+@pytest.mark.parametrize("base_name", list(BASELINES))
+def test_invariants_with_unavailable_dates(
+    block: str, race_type: str, distance: float | None, base_name: str
+) -> None:
+    goal = RaceGoal(
+        race_type=race_type,
+        distance_km=distance,
+        race_date=MONDAY + dt.timedelta(weeks=20, days=6),
+        days_per_week=5,
+        unavailable_dates=BLOCKS[block],
     )
     plan = build_plan(goal, BASELINES[base_name], MONDAY)
     check_invariants(plan, goal, MONDAY)
@@ -321,3 +367,81 @@ def test_race_before_start_rejected() -> None:
     goal = RaceGoal(race_type="5k", race_date=MONDAY, days_per_week=3)
     with pytest.raises(ValueError):
         build_plan(goal, EMPTY, MONDAY)
+
+
+# ------------------------------------------------- regressions from the independent review
+
+
+def test_no_long_run_the_day_before_a_monday_marathon() -> None:
+    goal = RaceGoal(race_type="marathon", race_date=dt.date(2027, 4, 19), days_per_week=4)
+    plan = build_plan(goal, MARATHON_5H, MONDAY)
+    check_invariants(plan, goal, MONDAY)
+    day_before = [s for w in plan.weeks for s in w.sessions if s.date == dt.date(2027, 4, 18)]
+    assert all(s.kind is SessionKind.EASY and s.distance_km <= 8 for s in day_before)
+
+
+def test_easy_runs_capped_with_few_days() -> None:
+    goal = RaceGoal(
+        race_type="5k", race_date=MONDAY + dt.timedelta(weeks=12, days=6), days_per_week=2
+    )
+    plan = build_plan(goal, ADVANCED, MONDAY)
+    check_invariants(plan, goal, MONDAY)
+    assert (
+        max(s.distance_km for w in plan.weeks for s in w.sessions if s.kind is SessionKind.EASY)
+        <= EASY_MAX_KM["5k"]
+    )
+    assert any("add a running day" in w for w in plan.warnings)
+
+
+def test_resume_after_a_month_off() -> None:
+    blocked = [MONDAY + dt.timedelta(weeks=8, days=d) for d in range(28)]
+    goal = RaceGoal(
+        race_type="ultra",
+        distance_km=100,
+        race_date=dt.date(2027, 5, 29),
+        days_per_week=5,
+        unavailable_dates=blocked,
+    )
+    plan = build_plan(goal, ULTRA_RUNNER, MONDAY)
+    check_invariants(plan, goal, MONDAY)
+    before = max(w.target_km for w in plan.weeks[:8])
+    best_long_before = max(w.long_run_km for w in plan.weeks[:8])
+    resume = plan.weeks[12]
+    assert resume.target_km <= before * 0.6 + TOL
+    assert resume.long_run_km <= best_long_before * 0.6 + TOL
+    assert any("resumes at a reduced load" in w for w in plan.warnings)
+
+
+def test_far_future_race_is_bounded_and_fast() -> None:
+    import time
+
+    goal = RaceGoal(race_type="marathon", race_date=dt.date(2100, 4, 18), days_per_week=4)
+    t0 = time.perf_counter()
+    plan = build_plan(goal, MARATHON_5H, MONDAY)
+    assert time.perf_counter() - t0 < 1.0
+    assert len(plan.weeks) == MAX_PLAN_WEEKS
+    assert any("more than 52 weeks away" in w for w in plan.warnings)
+    check_invariants(plan, goal, MONDAY)
+
+
+def test_tiny_recent_volume_does_not_jump() -> None:
+    tiny = AthleteBaseline(
+        weeks_analyzed=8, recent_weekly_km=3, longest_run_km=2, runs_per_week=1, from_garmin=True
+    )
+    goal = RaceGoal(
+        race_type="10k", race_date=MONDAY + dt.timedelta(weeks=14, days=6), days_per_week=7
+    )
+    plan = build_plan(goal, tiny, MONDAY)
+    check_invariants(plan, goal, MONDAY)
+    assert plan.weeks[0].target_km <= MIN_WEEK_KM + TOL
+    assert len(plan.weeks[0].sessions) <= 2
+    assert any("fewer running days" in w for w in plan.warnings)
+
+
+def test_race_tomorrow_without_history_is_flagged() -> None:
+    goal = RaceGoal(
+        race_type="ultra", distance_km=100, race_date=MONDAY + dt.timedelta(days=1), days_per_week=4
+    )
+    plan = build_plan(goal, EMPTY, MONDAY)
+    check_invariants(plan, goal, MONDAY)
+    assert any("cannot prepare you" in w for w in plan.warnings)

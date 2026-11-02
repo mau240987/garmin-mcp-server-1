@@ -13,7 +13,7 @@ notes predate MCP SDK 2.3 (snake_case `ToolAnnotations`, `mcp.server.mcpserver`)
 | A3 | `UnofficialBackend` + `GARMIN_ALLOW_UNOFFICIAL_WRITES` | **Done** | Writes off by default in every configuration (behaviour change, documented in README); nothing reaches Garmin when disabled. |
 | A4 | `OfficialStarterBackend` stub + requirements | **Done (stub)** | Declares no capabilities; router prefers it for writes once it does (tested). Requirements: `docs/starter-requirements.md`. |
 | C1 | Goal/plan model + local storage | **Done** | `coach/models.py`, `coach/storage.py` (JSON, atomic, 0600, `GARMIN_COACH_DATA_DIR`). |
-| C2 | Deterministic plan engine | **Done** | `coach/engine.py`, rules in `docs/plan-engine.md`; 5 brief cases + 2,160-case invariant matrix. |
+| C2 | Deterministic plan engine | **Done** (v1.1 after review) | `coach/engine.py`, rules R1-R11 in `docs/plan-engine.md`; 5 brief cases, ~7,200-case invariant matrix, one regression test per review finding. |
 | C3–C4 | New MCP tools, export | Not started | |
 | S1–S2 | Claude skill/plugin, ChatGPT/Gemini instructions | Not started | |
 | V | Independent review + E2E | Partial | Review of H done by a separate agent; all findings fixed (see below). E2E pending later pieces. |
@@ -88,3 +88,18 @@ correct. Fixed: accurate messages when the write flag is on but no unofficial lo
 no "writes ENABLED" startup warning in read-only mode or without a login; every remediation
 says the athlete (not the assistant) changes settings and mentions the login; create and
 schedule now always use the same backend (guards a future partial Starter implementation).
+
+## Independent review of C1+C2 — findings and fixes
+
+The review found serious defects the first test suite missed (it reproduced each one): a long
+run the day before a Monday race (2,520 combinations), easy runs longer than the long run (up
+to 36 km), a +42% jump back to full load after a month of unavailable dates, no horizon limit
+(a far-future race never finished), week 1 at 7x the recent volume, implausible goals accepted,
+undecodable files breaking listing, no schema-version check.
+Fix: the engine was restructured to a single pass per week computing everything from the
+volume actually planned, with new rules R2b, R4b, R9, R10, R11; goal consistency validation;
+storage hardening (fsync, fullmatch ids, decode errors, schema version + migration hook).
+The tests were strengthened (non-circular checks, wider matrix incl. long-run day, mid-week
+start, unavailable dates); they caught three more defects during the fix (stagnation after a
+gap, easy > long when days increase, race week above the taper week). The reviewer's own
+scan now reports only the intentional 8 km minimum week.

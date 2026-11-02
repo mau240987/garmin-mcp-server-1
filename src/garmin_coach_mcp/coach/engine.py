@@ -14,8 +14,12 @@ R4 The long run is capped per distance and level, by a share of the weekly volum
 R5 Taper: TAPER_WEEKS by distance, volume a decreasing share of the peak (TAPER_FACTORS).
 R6 Phases before the taper: base / build / specific (~40/35/25%).
 R7 Beginners get no quality session in the base phase and at most one later.
-   Sessions on unavailable dates are dropped (with a warning), not moved: the following week
-   resumes the planned load.
+   Sessions on unavailable dates are dropped (with a warning), not moved.
+R9 No long or hard session within RACE_PROTECT_DAYS of the race.
+R10 At most MAX_PLAN_WEEKS weeks are planned.
+R11 After a gap (unavailable dates), training resumes at RESUME_FACTOR of the previous load.
+Volumes, long runs and progression are always computed from what is actually planned.
+See docs/plan-engine.md for the full list (R2b, R4b).
 R8 Short preparations, empty history and big volume gaps produce explicit warnings; the
    engine never raises volume faster than R2 to "catch up".
 """
@@ -38,7 +42,7 @@ from garmin_coach_mcp.coach.models import (
 )
 from garmin_coach_mcp.formatting import format_pace
 
-ENGINE_VERSION = "1.0.0"
+ENGINE_VERSION = "1.1.0"
 
 PROGRESSION = 1.10
 RECOVERY_EVERY = 4
@@ -47,6 +51,19 @@ RECOVERY_LONG_FACTOR = 0.70
 LONG_RUN_STEP_KM = 2.0
 MIN_EASY_KM = 3.0
 ROUND_KM = 0.5
+MIN_WEEK_KM = 8.0
+#: An easy run is at most this share of the week's long run, and at most EASY_MAX_KM (R4b).
+EASY_LONG_RATIO = 0.75
+EASY_MAX_KM = {"5k": 12.0, "10k": 13.0, "half": 15.0, "marathon": 16.0, "ultra": 20.0}
+QUALITY_KM = (5.0, 16.0)
+#: No long run or hard session within this many days before the race (R9).
+RACE_PROTECT_DAYS = {"5k": 2, "10k": 3, "half": 4, "marathon": 6, "ultra": 8}
+SHAKEOUT_MAX_KM = 8.0
+#: Plans cover at most this many weeks; earlier weeks are left to free base running (R10).
+MAX_PLAN_WEEKS = 52
+#: A week where unavailable dates removed more than half the volume is a gap (R11).
+GAP_THRESHOLD = 0.5
+RESUME_FACTOR = {1: 0.75, 2: 0.60}  # after 1 gap week / after 2 or more
 
 SAFETY_NOTE = (
     "This plan is general training guidance, not medical advice. Stop and see a doctor or "
@@ -214,11 +231,11 @@ def _session(
 
 
 def _fix_rounding(sessions: list[PlannedSession], target: float) -> None:
-    """Move the rounding residual onto easy runs so the week sums to its target."""
+    """Move the rounding residual onto easy runs (long run only if there is none)."""
     residual = round(target - sum(s.distance_km for s in sessions), 1)
     if abs(residual) < ROUND_KM:
         return
-    ordered = sorted(sessions, key=lambda s: s.kind is not SessionKind.EASY)  # easy runs first
+    ordered = sorted(sessions, key=lambda s: s.kind is not SessionKind.EASY)
     for s in ordered:
         if s.kind in (SessionKind.EASY, SessionKind.LONG):
             new = _r(s.distance_km + residual)
@@ -227,6 +244,181 @@ def _fix_rounding(sessions: list[PlannedSession], target: float) -> None:
                     s.est_duration_min = round(s.est_duration_min * new / s.distance_km)
                 s.distance_km = new
                 return
+
+
+def _days_for_volume(requested: int, km: float, long_km: float) -> int:
+    """R2b: fewer running days when the volume left after the long run cannot give every other
+    day an easy run of at least MIN_EASY_KM."""
+    others = int(max(0.0, km - max(long_km, MIN_EASY_KM)) // MIN_EASY_KM)
+    return max(2, min(requested, 1 + others))
+
+
+def _layout_week(
+    *,
+    monday: dt.date,
+    km: float,
+    long_km: float,
+    long_limit: float,
+    days: int,
+    goal: RaceGoal,
+    phase: Phase,
+    level: Level,
+    dclass: str,
+    recovery: bool,
+    easy_pace: float | None,
+) -> tuple[list[PlannedSession], bool]:
+    """Sessions of a normal (non-race) week. Returns (sessions, volume_was_capped)."""
+    shift = goal.long_run_day - 6
+    run_days = _running_days(days, goal.long_run_day)
+    long_day = goal.long_run_day
+    q = _quality_count(phase, level, days, recovery)
+    quality_days = [(d + shift) % 7 for d in QUALITY_DAYS]
+    q_days = [d for d in quality_days if d in run_days and d != long_day][:q]
+    long_km = max(long_km, MIN_EASY_KM)
+    q_km = [min(QUALITY_KM[1], max(QUALITY_KM[0], km * 0.18), long_km) for _ in q_days]
+    if long_km < QUALITY_KM[0]:
+        q_days, q_km = [], []  # a quality session never exceeds the long run
+    medium_long_day = None
+    if dclass == "ultra" and phase is Phase.SPECIFIC and not recovery and km >= LOW_VOLUME_KM:
+        sat = (5 + shift) % 7
+        if sat in run_days and sat not in q_days and sat != long_day:
+            medium_long_day = sat
+    ml_km = long_km * 0.6 if medium_long_day is not None else 0.0
+    easy_days = [d for d in run_days if d not in q_days and d not in (long_day, medium_long_day)]
+    # Quality sessions turn into easy runs when the minimums do not fit the volume.
+    while q_days and long_km + sum(q_km) + ml_km + MIN_EASY_KM * len(easy_days) > km:
+        easy_days.append(q_days.pop())
+        q_km.pop()
+    easy_days.sort()
+    easy_cap = max(MIN_EASY_KM, min(EASY_MAX_KM[dclass], EASY_LONG_RATIO * long_km))
+    n_easy = len(easy_days)
+    free = km - long_km - sum(q_km) - ml_km
+    capped = False
+    if n_easy:
+        easy_km = free / n_easy
+        if easy_km > easy_cap:
+            # Easy runs are full: the rest goes to the long run within its own limits (R4).
+            extra = min(free - n_easy * easy_cap, max(0.0, long_limit - long_km))
+            long_km += extra
+            easy_cap = max(MIN_EASY_KM, min(EASY_MAX_KM[dclass], EASY_LONG_RATIO * long_km))
+            easy_km = min(easy_cap, (free - extra) / n_easy)
+            capped = (free - extra) / n_easy > easy_cap + 0.25
+        if easy_km < MIN_EASY_KM:
+            easy_km = MIN_EASY_KM
+            long_km = max(MIN_EASY_KM, km - sum(q_km) - ml_km - n_easy * MIN_EASY_KM)
+        if easy_km > long_km:  # tiny weeks: share evenly so no easy run beats the long run
+            long_km = easy_km = (long_km + n_easy * easy_km) / (n_easy + 1)
+    else:
+        easy_km = 0.0
+        capped = free > 0.5
+
+    sessions: list[PlannedSession] = []
+    for d in run_days:
+        date = monday + dt.timedelta(days=d)
+        if d == long_day:
+            desc = "Long run, easy and conversational."
+            if dclass == "marathon" and phase is Phase.SPECIFIC and not recovery:
+                desc = "Long run; last 20-30 min at goal marathon effort if feeling good."
+            if dclass == "ultra":
+                desc = "Long run on similar terrain; walk the climbs, practise fuelling."
+            sessions.append(_session(date, SessionKind.LONG, long_km, "Z2", desc, easy_pace))
+        elif d in q_days:
+            slot = q_days.index(d)
+            kind, zone, desc = _quality_session(phase, dclass, goal, level, slot)
+            sessions.append(_session(date, kind, q_km[slot], zone, desc, None))
+        elif d == medium_long_day:
+            sessions.append(
+                _session(
+                    date,
+                    SessionKind.MEDIUM_LONG,
+                    ml_km,
+                    "Z2",
+                    "Medium-long run the day before the long run (back-to-back).",
+                    easy_pace,
+                )
+            )
+        else:
+            sessions.append(
+                _session(
+                    date,
+                    SessionKind.EASY,
+                    easy_km,
+                    "Z2",
+                    "Easy run, conversational pace (Z2).",
+                    easy_pace,
+                )
+            )
+    if not capped:
+        _fix_rounding(sessions, _r(km))
+    return sessions, capped
+
+
+def _race_week(
+    monday: dt.date, km: float, goal: RaceGoal, days: int, easy_pace: float | None
+) -> list[PlannedSession]:
+    race_wd = goal.race_date.weekday()
+    run_days = _running_days(days, goal.long_run_day)
+    # Only as many shake-outs as the (tapered) volume allows: never above the previous week.
+    n_pre = min(3, max(1, int(km // MIN_EASY_KM)))
+    pre_days = [d for d in run_days if d < race_wd][-n_pre:]
+    sessions: list[PlannedSession] = []
+    if pre_days:
+        per = max(MIN_EASY_KM, min(SHAKEOUT_MAX_KM, km / len(pre_days)))
+        for d in pre_days:
+            last = d == pre_days[-1]
+            sessions.append(
+                _session(
+                    monday + dt.timedelta(days=d),
+                    SessionKind.STRIDES if last else SessionKind.EASY,
+                    per * (0.6 if last else 1.0),
+                    "Z1-Z2",
+                    "Short easy run" + (" with 4x15 s strides." if last else "."),
+                    easy_pace,
+                )
+            )
+    goal_txt = (
+        f", goal {format_pace(goal.race_pace_s_per_km)}"
+        if goal.race_pace_s_per_km
+        else ", goal: finish"
+    )
+    sessions.append(
+        PlannedSession(
+            date=goal.race_date,
+            kind=SessionKind.RACE,
+            distance_km=round(goal.distance_km, 3),
+            zone="race",
+            description=f"RACE: {goal.race_name or goal.race_type.value} ({goal.distance_km:g} km)"
+            + goal_txt,
+        )
+    )
+    return sessions
+
+
+_HARD = (
+    SessionKind.LONG,
+    SessionKind.MEDIUM_LONG,
+    SessionKind.TEMPO,
+    SessionKind.INTERVALS,
+    SessionKind.RACE_PACE,
+)
+
+
+def _protect_race(sessions: list[PlannedSession], goal: RaceGoal, dclass: str) -> int:
+    """R9: no long or hard session in the last days before the race. Returns how many changed."""
+    first_protected = goal.race_date - dt.timedelta(days=RACE_PROTECT_DAYS[dclass])
+    changed = 0
+    for i, s in enumerate(sessions):
+        if s.kind in _HARD and first_protected <= s.date < goal.race_date:
+            sessions[i] = PlannedSession(
+                date=s.date,
+                kind=SessionKind.EASY,
+                distance_km=min(s.distance_km, SHAKEOUT_MAX_KM),
+                zone="Z1-Z2",
+                description="Easy run, keep it short: the race is close.",
+                pace_hint=s.pace_hint,
+            )
+            changed += 1
+    return changed
 
 
 def build_plan(
@@ -239,37 +431,39 @@ def build_plan(
         raise ValueError("race_date must be after start_date")
     dclass = _distance_class(goal.distance_km)
     level = goal.level or infer_level(baseline)
+    easy_pace = baseline.easy_pace_s_per_km
     warnings: list[str] = []
     notes = [SAFETY_NOTE]
 
     first_monday = _monday(start_date)
     n_weeks = (_monday(goal.race_date) - first_monday).days // 7 + 1
+    if n_weeks > MAX_PLAN_WEEKS:  # R10: bounded horizon
+        first_monday = _monday(goal.race_date) - dt.timedelta(weeks=MAX_PLAN_WEEKS - 1)
+        start_date = first_monday
+        n_weeks = MAX_PLAN_WEEKS
+        warnings.append(
+            f"The race is more than {MAX_PLAN_WEEKS} weeks away: the plan starts on "
+            f"{first_monday}. Until then keep running easily at your current volume."
+        )
     taper = min(TAPER_WEEKS[dclass], max(1, n_weeks // 4)) if n_weeks > 1 else 1
     if goal.race_date.weekday() <= 2 and n_weeks > taper + 1:
         taper += 1  # race early in the week: the week before must already be lighter (R5)
     phases = _phase_layout(n_weeks, taper)
+    pre_taper = n_weeks - taper
 
-    # Volumes ------------------------------------------------------------------------------
     peak_target = PEAK_KM[dclass][level]
-    days = goal.days_per_week
-    floor_km = max(8.0, days * MIN_EASY_KM)
+    days_req = goal.days_per_week
+    long_cap = LONG_CAP_KM[dclass][level]
+    if easy_pace:
+        long_cap = min(long_cap, LONG_RUN_MAX_MIN[dclass] * 60 / easy_pace)
     if baseline.is_empty:
-        start_km = min(max(days * 4.0, 8.0), 25.0)
+        start_km = min(max(days_req * MIN_EASY_KM, MIN_WEEK_KM), 15.0)
         warnings.append(
             "No recent running history found: the plan starts conservatively. Review it after "
             "two weeks with review_week."
         )
-    else:
-        start_km = max(floor_km, min(baseline.recent_weekly_km, peak_target))
-        if baseline.recent_weekly_km * PROGRESSION < floor_km:
-            warnings.append(
-                f"Recent volume (~{_r(baseline.recent_weekly_km)} km/week) is below the "
-                f"{floor_km:g} km needed to run {days} days a week: week 1 is a step up. "
-                "Consider fewer running days at first."
-            )
-    long_cap = LONG_CAP_KM[dclass][level]
-    if baseline.easy_pace_s_per_km:
-        long_cap = min(long_cap, LONG_RUN_MAX_MIN[dclass] * 60 / baseline.easy_pace_s_per_km)
+    else:  # R2: never start above the recent volume (minimum MIN_WEEK_KM)
+        start_km = max(MIN_WEEK_KM, min(baseline.recent_weekly_km, peak_target))
 
     if n_weeks < RECOMMENDED_WEEKS[dclass]:
         warnings.append(
@@ -282,204 +476,161 @@ def build_plan(
             f"A {dclass} is very demanding for the current training level: aim to finish, keep "
             "every run easy unless stated, and reconsider the race if long runs feel too hard."
         )
-
-    loading_peak = start_km
-    weekly: list[float] = []
-    longs: list[float] = []
-    recovery_flags: list[bool] = []
-    last_loading = start_km / PROGRESSION  # so week 1 is at most start_km
-    last_long = baseline.longest_run_km if not baseline.is_empty else 0.0
-    loading_count = 0
-    pre_taper = phases.count(Phase.BASE) + phases.count(Phase.BUILD) + phases.count(Phase.SPECIFIC)
-    for i, phase in enumerate(phases):
-        if phase is Phase.TAPER:
-            t_index = i - pre_taper
-            factor = TAPER_FACTORS[taper][t_index]
-            km = max(floor_km * 0.6, loading_peak * factor)
-            long_km = min(longs[-1] if longs else long_cap, max(0.0, km * 0.35))
-            weekly.append(km)
-            longs.append(long_km)
-            recovery_flags.append(False)
-            continue
-        is_recovery = (i + 1) % RECOVERY_EVERY == 0 and i + 1 < pre_taper
-        if is_recovery:
-            km = last_loading * RECOVERY_FACTOR
-            long_km = (longs[-1] if longs else km * 0.35) * RECOVERY_LONG_FACTOR
-        else:
-            km = min(peak_target, last_loading * PROGRESSION) if loading_count else start_km
-            share = max(LONG_SHARE[dclass], 0.40) if km < LOW_VOLUME_KM else LONG_SHARE[dclass]
-            long_km = min(long_cap, km * share, max(last_long, km * 0.25) + LONG_RUN_STEP_KM)
-            if longs and long_km > (max(longs) + LONG_RUN_STEP_KM):
-                long_km = max(longs) + LONG_RUN_STEP_KM
-            last_loading = km
-            last_long = max(last_long, long_km)
-            loading_peak = max(loading_peak, km)
-            loading_count += 1
-        weekly.append(km)
-        longs.append(long_km)
-        recovery_flags.append(is_recovery)
-
-    if loading_peak < 0.6 * peak_target and dclass in ("half", "marathon", "ultra"):
+    if (
+        dclass in ("half", "marathon", "ultra")
+        and n_weeks <= 2
+        and baseline.longest_run_km < 0.5 * goal.distance_km
+    ):
         warnings.append(
-            f"Peak volume reaches about {_r(loading_peak)} km/week, below the usual "
-            f"{peak_target:.0f} km/week for this goal: there is not enough time to build up "
-            "safely. Treat the goal as finishing comfortably."
+            f"The race is in {n_weeks} week(s) and the longest recent run is "
+            f"{baseline.longest_run_km:g} km: this plan only keeps you fresh, it cannot prepare "
+            f"you for {goal.distance_km:g} km. Consider a shorter race or a later date."
         )
 
-    # Sessions ---------------------------------------------------------------------------
-    run_days = _running_days(days, goal.long_run_day)
-    shift = goal.long_run_day - 6
-    quality_days = [(d + shift) % 7 for d in QUALITY_DAYS]
     unavailable = set(goal.unavailable_dates)
     weeks: list[PlanWeek] = []
-    best_long = 0.0  # longest long run actually planned so far (R4 growth is measured on it)
+    last_loading = 0.0  # volume actually planned in the last loading week
+    loading_peak = 0.0
+    best_long = 0.0  # longest long run actually planned (R4 growth is measured on it)
+    last_long = 0.0
+    gap_weeks = 0
+    pre_gap_loading = 0.0
+    capped_weeks: list[int] = []
+    reduced_days: list[int] = []
+    resumed: list[int] = []
+    protected = 0
+
     for i, phase in enumerate(phases):
         monday = first_monday + dt.timedelta(weeks=i)
         is_race_week = i == n_weeks - 1
-        km = weekly[i]
-        long_km = 0.0 if is_race_week else longs[i]
-        q = 0 if is_race_week else _quality_count(phase, level, days, recovery_flags[i])
-        q_days = [d for d in quality_days if d in run_days and d != goal.long_run_day][:q]
-        long_day = goal.long_run_day
-        easy_days = [d for d in run_days if d not in q_days and d != long_day]
-        sessions: list[PlannedSession] = []
+        recovery = phase is not Phase.TAPER and (i + 1) % RECOVERY_EVERY == 0 and i + 1 < pre_taper
+        if phase is Phase.TAPER:
+            factor = TAPER_FACTORS[taper][i - pre_taper]
+            # Relative to the most recent loading week (not an old peak before a gap).
+            km = max(MIN_WEEK_KM * 0.6, (last_loading or start_km) * factor)
+        elif recovery and last_loading:
+            km = max(MIN_WEEK_KM, last_loading * RECOVERY_FACTOR)
+        elif gap_weeks and pre_gap_loading:
+            km = max(MIN_WEEK_KM, pre_gap_loading * RESUME_FACTOR[min(gap_weeks, 2)])
+            resumed.append(i + 1)
+        elif not last_loading:
+            km = start_km
+        else:
+            km = min(peak_target, last_loading * PROGRESSION)
+        km = _r(km)
 
         if is_race_week:
-            race_wd = goal.race_date.weekday()
-            pre_days = [d for d in run_days if d < race_wd][-3:]
-            per = max(MIN_EASY_KM, min(8.0, km / max(1, len(pre_days))))
-            for d in pre_days:
-                date = monday + dt.timedelta(days=d)
-                sessions.append(
-                    _session(
-                        date,
-                        SessionKind.STRIDES if d == pre_days[-1] else SessionKind.EASY,
-                        per * (0.6 if d == pre_days[-1] else 1.0),
-                        "Z1-Z2",
-                        "Short easy run" + (" with 4x15 s strides." if d == pre_days[-1] else "."),
-                        baseline.easy_pace_s_per_km,
-                    )
-                )
-            sessions.append(
-                PlannedSession(
-                    date=goal.race_date,
-                    kind=SessionKind.RACE,
-                    distance_km=round(goal.distance_km, 3),
-                    zone="race",
-                    description=f"RACE: {goal.race_name or goal.race_type.value} "
-                    f"({goal.distance_km:g} km)"
-                    + (
-                        f", goal {format_pace(goal.race_pace_s_per_km)}"
-                        if goal.race_pace_s_per_km
-                        else ", goal: finish"
-                    ),
-                )
-            )
+            sessions = _race_week(monday, km, goal, days_req, easy_pace)
         else:
-            q_km = [min(16.0, max(5.0, km * 0.18)) for _ in q_days]
-            # Low volume: quality sessions turn into easy runs when the minimums do not fit.
-            while q_days and (sum(q_km) + MIN_EASY_KM * (len(run_days) - len(q_days)) > km):
-                easy_days.append(q_days.pop())
-                q_km.pop()
-            easy_days.sort()
-            # Ultra specific phase: Saturday medium-long instead of one easy run (back-to-back).
-            medium_long_day = None
-            if (
-                dclass == "ultra"
-                and phase is Phase.SPECIFIC
-                and not recovery_flags[i]
-                and km >= LOW_VOLUME_KM
-            ):
-                sat = (5 + shift) % 7
-                if sat in easy_days:
-                    medium_long_day = sat
-            if best_long and not recovery_flags[i] and phase is not Phase.TAPER:
-                long_km = min(long_km, best_long + LONG_RUN_STEP_KM)
-            fixed = long_km + sum(q_km)
-            ml_km = long_km * 0.6 if medium_long_day is not None else 0.0
-            n_easy = len(easy_days) - (1 if medium_long_day is not None else 0)
-            rest_km = km - fixed - ml_km
-            easy_km = rest_km / n_easy if n_easy else 0.0
-            if n_easy and easy_km < MIN_EASY_KM:
-                # Low volume: shrink the long run first so easy runs stay >= MIN_EASY_KM.
-                easy_km = MIN_EASY_KM
-                long_km = max(MIN_EASY_KM, km - sum(q_km) - ml_km - n_easy * MIN_EASY_KM)
-            for d in run_days:
-                date = monday + dt.timedelta(days=d)
-                if d == long_day:
-                    desc = "Long run, easy and conversational."
-                    if dclass == "marathon" and phase is Phase.SPECIFIC and not recovery_flags[i]:
-                        desc = "Long run; last 20-30 min at goal marathon effort if feeling good."
-                    if dclass == "ultra":
-                        desc = "Long run on similar terrain; walk the climbs, practise fuelling."
-                    sessions.append(
-                        _session(
-                            date, SessionKind.LONG, long_km, "Z2", desc, baseline.easy_pace_s_per_km
-                        )
+            base_long = best_long or max(baseline.longest_run_km, km * 0.25)
+            long_limit = min(long_cap, base_long + LONG_RUN_STEP_KM)
+            if phase is Phase.TAPER:
+                long_km = min(best_long or long_cap, km * 0.35)
+                long_limit = long_km
+            elif recovery:
+                long_km = (last_long or km * 0.35) * RECOVERY_LONG_FACTOR
+                long_limit = long_km
+            else:
+                share = max(LONG_SHARE[dclass], 0.40) if km < LOW_VOLUME_KM else LONG_SHARE[dclass]
+                long_km = min(long_limit, km * share)
+                # Do not shrink the long run below the best so far when the volume allows it.
+                long_km = max(long_km, min(best_long, long_limit, km - MIN_EASY_KM))
+                if resumed and resumed[-1] == i + 1:
+                    long_limit = max(
+                        best_long * RESUME_FACTOR[min(gap_weeks, 2)], MIN_EASY_KM * 1.5
                     )
-                elif d in q_days:
-                    slot = q_days.index(d)
-                    kind, zone, desc = _quality_session(phase, dclass, goal, level, slot)
-                    sessions.append(_session(date, kind, q_km[slot], zone, desc, None))
-                elif d == medium_long_day:
-                    sessions.append(
-                        _session(
-                            date,
-                            SessionKind.MEDIUM_LONG,
-                            ml_km,
-                            "Z2",
-                            "Medium-long run the day before the long run (back-to-back).",
-                            baseline.easy_pace_s_per_km,
-                        )
-                    )
-                else:
-                    sessions.append(
-                        _session(
-                            date,
-                            SessionKind.EASY,
-                            easy_km,
-                            "Z2",
-                            "Easy run, conversational pace (Z2).",
-                            baseline.easy_pace_s_per_km,
-                        )
-                    )
+                    long_km = min(long_km, long_limit)
+            days = _days_for_volume(days_req, km, long_km)
+            if days < days_req and phase is not Phase.TAPER:
+                reduced_days.append(i + 1)
+            sessions, capped = _layout_week(
+                monday=monday,
+                km=km,
+                long_km=long_km,
+                long_limit=long_limit,
+                days=days,
+                goal=goal,
+                phase=phase,
+                level=level,
+                dclass=dclass,
+                recovery=recovery,
+                easy_pace=easy_pace,
+            )
+            if capped and phase is not Phase.TAPER:
+                capped_weeks.append(i + 1)
 
-        if not is_race_week:
-            _fix_rounding(sessions, _r(km))
-
-        # Drop sessions before the start date, after the race, or on unavailable dates.
+        protected += _protect_race(sessions, goal, dclass)
         dropped = [s for s in sessions if s.date in unavailable and s.kind is not SessionKind.RACE]
         if dropped:
             warnings.append(
                 f"Week {i + 1}: {len(dropped)} session(s) skipped on unavailable dates "
                 f"({', '.join(sorted({s.date.isoformat() for s in dropped}))})."
             )
+        intended = round(sum(s.distance_km for s in sessions if s.kind is not SessionKind.RACE), 1)
         sessions = [
             s
             for s in sessions
             if start_date <= s.date <= goal.race_date
             and (s.kind is SessionKind.RACE or s.date not in unavailable)
         ]
-        planned_km = round(
-            sum(s.distance_km for s in sessions if s.kind is not SessionKind.RACE), 1
-        )
-        best_long = max(
-            best_long,
-            max((s.distance_km for s in sessions if s.kind is SessionKind.LONG), default=0.0),
-        )
+        planned = round(sum(s.distance_km for s in sessions if s.kind is not SessionKind.RACE), 1)
         long_planned = max(
             (s.distance_km for s in sessions if s.kind is SessionKind.LONG), default=0.0
         )
+
+        # State for the next week (R2/R11: progress from what is actually planned).
+        is_gap = bool(dropped) and intended > 0 and planned < GAP_THRESHOLD * intended
+        if phase is not Phase.TAPER and not recovery:
+            if is_gap:
+                if not gap_weeks:
+                    pre_gap_loading = last_loading or intended
+                gap_weeks += 1
+            else:
+                gap_weeks = 0
+                # A partial first week (start mid-week) progresses from its intended volume;
+                # weeks with skipped days progress from what was actually planned.
+                partial_first = i == 0 and start_date > monday
+                last_loading = intended if partial_first else planned
+                loading_peak = max(loading_peak, last_loading)
+        if long_planned:
+            best_long = max(best_long, long_planned)
+            last_long = long_planned
+
         weeks.append(
             PlanWeek(
                 index=i + 1,
                 start_date=monday,
                 phase=phase,
-                is_recovery=recovery_flags[i],
-                target_km=planned_km,
+                is_recovery=recovery,
+                target_km=planned,
                 long_run_km=long_planned,
                 sessions=sessions,
             )
+        )
+
+    if reduced_days:
+        warnings.append(
+            f"Weeks {_ranges(reduced_days)} use fewer running days than requested because the "
+            "weekly volume is still low."
+        )
+    if capped_weeks:
+        warnings.append(
+            f"With {days_req} running day(s) a week the volume of weeks {_ranges(capped_weeks)} "
+            "is limited by the easy-run cap; add a running day to approach the usual peak."
+        )
+    if resumed:
+        warnings.append(
+            f"Training resumes at a reduced load after unavailable weeks (week(s) "
+            f"{_ranges(resumed)})."
+        )
+    if protected:
+        notes.append(f"{protected} session(s) close to the race were turned into short easy runs.")
+    peak = max((w.target_km for w in weeks), default=0.0)
+    if peak < 0.6 * peak_target and dclass in ("half", "marathon", "ultra"):
+        warnings.append(
+            f"Peak volume reaches about {peak:g} km/week, below the usual {peak_target:.0f} "
+            "km/week for this goal: there is not enough time to build up safely. Treat the goal "
+            "as finishing comfortably."
         )
 
     return TrainingPlan(
@@ -488,10 +639,24 @@ def build_plan(
         race_date=goal.race_date,
         level=level,
         baseline=baseline,
-        peak_weekly_km=max(w.target_km for w in weeks),
+        peak_weekly_km=peak,
         weeks=weeks,
         warnings=warnings,
         notes=notes,
         attribution=GARMIN_DERIVED_ATTRIBUTION if baseline.from_garmin else None,
         engine_version=ENGINE_VERSION,
     )
+
+
+def _ranges(nums: list[int]) -> str:
+    """[1,2,3,7] -> '1-3, 7'."""
+    out: list[str] = []
+    start = prev = nums[0]
+    for n in [*nums[1:], None]:
+        if n is not None and n == prev + 1:
+            prev = n
+            continue
+        out.append(f"{start}-{prev}" if start != prev else f"{start}")
+        if n is not None:
+            start = prev = n
+    return ", ".join(out)
