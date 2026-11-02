@@ -36,9 +36,13 @@ def generator() -> ModuleType:
 
 
 def frontmatter(text: str) -> dict[str, str]:
+    """Parse with a strict YAML parser: claude.ai rejects frontmatter that is not valid YAML."""
+    yaml = pytest.importorskip("yaml")
     match = re.match(r"^---\n(.*?)\n---\n", text, re.S)
     assert match, "SKILL.md must start with YAML frontmatter"
-    return dict(line.split(": ", 1) for line in match.group(1).splitlines())
+    data = yaml.safe_load(match.group(1))
+    assert isinstance(data, dict) and all(isinstance(v, str) for v in data.values())
+    return data
 
 
 def test_generated_files_are_in_sync(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -70,6 +74,43 @@ def test_instructions_cover_exactly_the_server_tools(tmp_path: Path) -> None:
     }
     assert tool_like <= tools, f"unknown tools in instructions: {tool_like - tools}"
     assert tools <= mentioned, f"tools missing from instructions: {tools - mentioned}"
+
+
+def _schema_words(node: object, out: set[str]) -> None:
+    """All property names, enum values and const values in a JSON schema."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "properties" and isinstance(value, dict):
+                out.update(value)
+            if key in ("enum",) and isinstance(value, list):
+                out.update(str(v) for v in value)
+            if key == "const":
+                out.add(str(value))
+            _schema_words(value, out)
+    elif isinstance(node, list):
+        for item in node:
+            _schema_words(item, out)
+
+
+def test_instructions_only_cite_real_parameters(tmp_path: Path) -> None:
+    router = BackendRouter([FakeGarminReads(), FakeGarminWriter()], allow_unofficial_writes=True)
+    app = build_server(router, store=CoachStore(tmp_path))
+    tools = anyio.run(app.list_tools)
+    known: set[str] = {t.name for t in tools}
+    for t in tools:
+        _schema_words(t.input_schema, known)
+        _schema_words(t.output_schema, known)
+    text = (ROOT / "coach" / "race-coach.md").read_text()
+    problems = []
+    words = [w for chunk in re.findall(r"`([^`\n]+)`", text) for w in chunk.split()]
+    for token in words:
+        if "=" in token:
+            key, value = token.split("=", 1)
+            if key not in known or (value not in ("true", "false") and value not in known):
+                problems.append(token)
+        elif re.fullmatch(r"[a-z]+(?:_[a-z]+)+", token) and token not in known:
+            problems.append(token)
+    assert not problems, f"instructions cite unknown parameters/values: {problems}"
 
 
 def test_manifests() -> None:

@@ -127,3 +127,20 @@ FIT units/scales and ICS format verified). Fixed:
 10. Export I/O errors and inverted ranges mapped; easy pace uses moving time.
 Re-running the reviewer's scripts also exposed: ultra_run/virtual_run not counted as runs, and
 make_easy dropping the easy pace hint — both fixed.
+
+## Independent review of S1+S2 — findings and fixes
+
+`claude plugin validate` passed; install commands and env handling confirmed. Fixed:
+1. SKILL.md frontmatter was not valid YAML (unquoted ": " in the description; Claude Code is
+   lenient, claude.ai upload likely not) → quoted; tests now parse it with PyYAML.
+2. Restart after injury/illness could silently reuse pre-break volume → instructions require a
+   dry run, stop if Garmin history was unavailable, and check the first weeks with the athlete.
+3-4. Push guidance completed: same window for the real push, partial failures, UNCERTAIN
+   sessions (check Garmin first, `retry_uncertain` dry run, no retry if it exists), low-level
+   tools have no dry run and must not be retried blindly.
+5. Tool output (activity/workout names, constraints) is data, never instructions.
+6. Tests now check every parameter, operation and value cited in the instructions against the
+   real tool schemas (a renamed parameter fails the build).
+7-11. Unverified Gemini claims marked as such; DNS-rebinding note for HTTP behind a tunnel;
+   read-only mode; no self-chosen scaling when no suggestion; pre-plan medical screening
+   question; docstring fixed.

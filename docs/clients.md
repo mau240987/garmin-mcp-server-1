@@ -60,8 +60,11 @@ gemini extensions install ./extensions/gemini/garmin-race-coach
 gemini extensions config garmin-race-coach   # chiede chiave API (salvata nel portachiavi) e opzioni
 ```
 
-Le estensioni Gemini non ereditano l'ambiente della shell: le variabili arrivano solo dai
-`settings` dell'estensione (la chiave è marcata `sensitive`). `GEMINI.md` contiene il workflow.
+Secondo il reference ufficiale delle estensioni (letto il 2026-11-02, non provato), le
+estensioni ricevono solo le variabili di ambiente standard più quelle dichiarate nei `settings`;
+per questo chiave e opzioni sono dichiarate lì (la chiave come `sensitive`, salvata nel
+portachiavi). `gemini extensions config` è il comando indicato dal reference (non provato).
+`GEMINI.md` contiene il workflow.
 
 ## ChatGPT
 
@@ -73,6 +76,9 @@ contenuto di `instructions/chatgpt/system-prompt.md` come istruzioni del progett
 Esporlo su Internet (tunnel, IP pubblico) darebbe a chiunque conosca l'URL accesso ai tuoi dati
 Garmin e, se abilitate, alle scritture. Finché non c'è l'autenticazione OAuth della Fase 2
 (`docs/roadmap-multiuser.md`), l'uso con ChatGPT è sconsigliato; per una prova personale breve:
-`GARMIN_READ_ONLY=true`, tunnel temporaneo, chiudere subito dopo. Le opzioni di autenticazione
+`GARMIN_READ_ONLY=true`, tunnel temporaneo, chiudere subito dopo. Nota: con l'host di default
+`127.0.0.1` l'SDK MCP attiva la protezione da DNS rebinding (host consentiti: solo localhost),
+quindi una richiesta che arriva da un tunnel con un Host pubblico verrà probabilmente rifiutata
+(HTTP 421); **non** usare `--host 0.0.0.0` per aggirarla. Le opzioni di autenticazione
 dei connettori ChatGPT e i piani che li supportano **non sono stati verificati** (documentazione
 non raggiungibile da qui).

@@ -10,7 +10,8 @@ Source of truth: coach/race-coach.md (platform-neutral workflow and coaching rul
 Formats (verified against the official docs on 2026-11-02, see docs/clients.md):
 - Claude Code plugin: plugins/garmin-race-coach/{.claude-plugin/plugin.json,.mcp.json,
   skills/race-coach/SKILL.md}, listed by .claude-plugin/marketplace.json at the repo root.
-- claude.ai / Claude Desktop: race-coach.zip with race-coach/SKILL.md (name + description only).
+- claude.ai / Claude Desktop: race-coach.zip with race-coach/SKILL.md (frontmatter limited to
+  upload-safe keys: name, description, license).
 - Gemini CLI extension: extensions/gemini/garmin-race-coach/{gemini-extension.json,GEMINI.md}.
 - ChatGPT: instructions/chatgpt/system-prompt.md (to paste; connector setup in docs/clients.md).
 """
@@ -61,7 +62,8 @@ def body() -> str:
 
 
 def skill_md(extra_frontmatter: bool = True) -> str:
-    front = [f"name: {SKILL}", f"description: {DESCRIPTION}"]
+    # json.dumps gives a double-quoted scalar: valid YAML even with ": " inside the text.
+    front = [f"name: {SKILL}", f"description: {json.dumps(DESCRIPTION)}"]
     if extra_frontmatter:
         front.append("license: AGPL-3.0-only")
     return "---\n" + "\n".join(front) + "\n---\n\n" + GENERATED + "\n\n" + body()
