@@ -7,7 +7,7 @@ producono lo stesso piano, senza casualità, senza orologio e senza LLM. I test
 circa 7.200 combinazioni (distanza, storico, giorni, anticipo, giorno di gara, giorno del lungo,
 inizio a metà settimana, date indisponibili) e su un test di regressione per ogni difetto
 trovato dalla revisione indipendente. Volumi, lungo e progressione si calcolano sempre su
-quanto è **effettivamente pianificato** (versione 1.1).
+quanto è **effettivamente pianificato** (versione 1.2).
 
 | Regola | Contenuto |
 |---|---|
@@ -24,6 +24,7 @@ quanto è **effettivamente pianificato** (versione 1.1).
 | R10 Orizzonte | Al massimo 52 settimane di piano; per gare più lontane il piano parte 52 settimane prima, con avviso. |
 | R11 Ripresa | Una settimana in cui le date indisponibili tolgono più di metà del volume è uno stop. La ripresa avviene al 75% (dopo 1 settimana) o al 60% (dopo 2 o più) del carico precedente, compreso il lungo, con avviso. |
 | R8 Avvisi | Preparazione corta, storico vuoto, giorni ridotti, volume limitato dai giorni, maratona/ultra per principianti, picco irraggiungibile, gara troppo vicina per la distanza. Il motore non accelera mai per "recuperare". |
+| R12 Varietà | Solo livello intermedio/avanzato, niente ultra, solo settimane di carico, mai nella prima settimana del piano. Le settimane di carico si alternano: in base e costruzione una settimana la qualità è un **fartlek** (8×1′ brillante/1′ facile, oppure 5×3′/2′ se la seduta è più lunga), l'altra il **lungo ha una parte più veloce**: finale in progressione Z3 (base: 15% del lungo, max 4 km; costruzione: 25%, max 8 km; per la maratona con tempo obiettivo, finale a ritmo gara). Nella fase specifica di mezza e maratona con tempo obiettivo: 2 blocchi a ritmo gara (30% del lungo, max 10 km, 1 km facile tra i blocchi). Fartlek e lungo variato non stanno mai nella stessa settimana. I volumi non cambiano: cambia solo come si corrono alcuni chilometri. Senza tempo obiettivo nessun ritmo gara (solo finali Z3 a sensazione). `make_easy` su un lungo variato lo rende un lungo facile della stessa distanza. |
 | Giorni | Schema per giorni/settimana con lungo la domenica (spostabile). Qualità martedì (e giovedì). Ultra in fase specifica: medio-lungo il sabato (back-to-back) da 30 km/settimana in su. |
 | Date indisponibili | Le sessioni vengono saltate (con avviso), non spostate. Si riparte da quanto effettivamente pianificato (R11 per gli stop lunghi). |
 

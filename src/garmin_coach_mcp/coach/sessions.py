@@ -7,12 +7,29 @@ missing pace never produces a fake target.
 
 from __future__ import annotations
 
-from garmin_coach_mcp.coach.models import PlannedSession, SessionKind
+from garmin_coach_mcp.coach.models import LongVariant, PlannedSession, SessionKind
 from garmin_coach_mcp.models import RepeatStep, WorkoutStep
 
 WARMUP_KM = 2.0
 COOLDOWN_KM = 2.0
 EASY_RANGE_S = 30  # easy pace range: [easy pace + 30 s, easy pace]
+#: Pace assumed only to size the easy filler of a fartlek when the easy pace is unknown.
+DEFAULT_EASY_S_PER_KM = 390.0
+GAP_KM = 1.0  # easy running between race-pace blocks of a long run
+
+
+MIN_FARTLEK_EASY_KM = 2.0  # warm-up + cool-down of a fartlek, at least
+
+
+def fartlek_pattern(km: float, easy_pace: float | None = None) -> tuple[int, int, int]:
+    """(repeats, fast s, easy s) of a fartlek of `km` km, sized so that the timed block plus
+    MIN_FARTLEK_EASY_KM of easy running fits the distance. Shared by the engine (description)
+    and the workout steps, so both always describe the same session."""
+    pace = easy_pace or DEFAULT_EASY_S_PER_KM
+    on_s, off_s, reps = (60, 60, 8) if km - WARMUP_KM - COOLDOWN_KM < 5.0 else (180, 120, 5)
+    while reps > 3 and km - reps * (on_s + off_s) / pace < MIN_FARTLEK_EASY_KM:
+        reps -= 1
+    return reps, on_s, off_s
 
 
 def _pace(seconds_per_km: float) -> str:
@@ -49,8 +66,29 @@ def session_steps(
     kind = session.kind
     if kind is SessionKind.RACE:
         raise ValueError("a race is not a workout")
+    if kind is SessionKind.LONG and session.long_variant and session.fast_km:
+        return _long_with_variant(session, easy, rp)
     if kind in (SessionKind.EASY, SessionKind.LONG, SessionKind.MEDIUM_LONG):
         return [_run(km, "run", easy)]
+    if kind is SessionKind.FARTLEK:
+        reps, on_s, off_s = fartlek_pattern(km, easy_pace)
+        block_km = reps * (on_s + off_s) / (easy_pace or DEFAULT_EASY_S_PER_KM)
+        warmup = max(1.0, min(WARMUP_KM, (km - block_km) / 2))
+        return [
+            _run(warmup, "warmup", easy),
+            RepeatStep(
+                repeat_count=reps,
+                steps=[
+                    WorkoutStep(
+                        type="run", duration_type="time", duration_value=on_s, primary="none"
+                    ),
+                    WorkoutStep(
+                        type="recover", duration_type="time", duration_value=off_s, primary="none"
+                    ),
+                ],
+            ),
+            _run(max(1.0, km - warmup - block_km), "cooldown", easy),
+        ]
     if kind is SessionKind.STRIDES:
         body = max(1.0, km - 1.0)
         return [
@@ -90,6 +128,31 @@ def session_steps(
     return steps
 
 
+def _long_with_variant(
+    session: PlannedSession,
+    easy: tuple[float, float] | None,
+    rp: tuple[float, float] | None,
+) -> list[WorkoutStep | RepeatStep]:
+    km, fast = session.distance_km, session.fast_km or 0.0
+    blocks = session.fast_blocks or 1
+    if km - fast - (blocks if blocks > 1 else 0) * GAP_KM < 1.0:
+        return [_run(km, "run", easy)]  # inconsistent faster part: plain easy long run
+    if session.long_variant is LongVariant.PROGRESSIVE or rp is None:
+        # Steady finish, effort-based: no pace target without a goal pace.
+        return [_run(km - fast, "run", easy), _run(fast, "run", None)]
+    if blocks == 1:
+        return [_run(km - fast, "run", easy), _run(fast, "run", rp)]
+    return [
+        _run(km - fast - blocks * GAP_KM, "run", easy),
+        RepeatStep(
+            repeat_count=blocks,
+            steps=[_run(fast / blocks, "run", rp), _run(GAP_KM, "run", easy)],
+        ),
+    ]
+
+
 def workout_name(session: PlannedSession, week_index: int) -> str:
     label = session.kind.value.replace("_", " ")
+    if session.long_variant:
+        label += f" {session.long_variant.value.replace('_', ' ')}"
     return f"RC W{week_index} {session.date:%a %d/%m} {label} {session.distance_km:g}km"[:80]

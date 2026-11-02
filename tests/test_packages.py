@@ -155,3 +155,19 @@ def test_registry_manifest_matches_the_package() -> None:
         assert f'"{env["name"]}"' in config, f"{env['name']} is not read by the server"
     readme = (ROOT / "README.md").read_text()
     assert "pip install garmin-mcp-server" not in readme and "uvx garmin-mcp-server" not in readme
+
+
+def test_push_workflow_template_is_safe() -> None:
+    """The data-repo workflow is manual, dry run by default, and never interpolates inputs
+    into shell code (they reach the script only through environment variables)."""
+    import yaml
+
+    path = ROOT / "templates" / "garmin-coach-data" / ".github" / "workflows" / "push-to-garmin.yml"
+    wf = yaml.safe_load(path.read_text(encoding="utf-8"))
+    triggers = wf[True] if True in wf else wf["on"]  # YAML 1.1 reads "on" as a boolean
+    assert list(triggers) == ["workflow_dispatch"]
+    assert triggers["workflow_dispatch"]["inputs"]["apply"]["default"] is False
+    for step in wf["jobs"]["push"]["steps"]:
+        assert "${{" not in step.get("run", ""), step.get("name")
+    gitignore = (ROOT / "templates" / "garmin-coach-data" / ".gitignore").read_text()
+    assert "garmin_tokens.json" in gitignore

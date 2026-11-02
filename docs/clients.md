@@ -55,6 +55,9 @@ scritture su Garmin chiedono sempre l'ok. Obiettivi, piani ed export finiscono i
 (ignorata da git, così l'app apre i file esportati) e **spariscono a fine sessione**: il container
 è temporaneo, il piano si rigenera dagli stessi dati.
 
+Per conservarli e inviare i workout a Garmin dal telefono: repo privato `garmin-coach-data` e
+workflow *Push to Garmin*, vedi [`garmin-push-actions.md`](garmin-push-actions.md).
+
 ## Claude Desktop / claude.ai
 
 1. Server: in `claude_desktop_config.json`

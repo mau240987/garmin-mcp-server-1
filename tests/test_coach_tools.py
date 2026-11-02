@@ -400,7 +400,12 @@ def test_apply_plan_update_operations(app: MCPServer, store: CoachStore) -> None
     assert all(s.date.isoformat() != easy["date"] for s in saved.weeks[1].sessions)
     # moving a long run next to another hard session is refused
     hard_neighbour = next(
-        (s for s in week2["sessions"] if s["kind"] in ("tempo", "intervals", "easy_strides")), None
+        (
+            s
+            for s in week2["sessions"]
+            if s["kind"] in ("tempo", "intervals", "easy_strides", "fartlek")
+        ),
+        None,
     )
     assert long_ and hard_neighbour is not None
 
@@ -793,3 +798,69 @@ def test_make_easy_keeps_an_easy_pace(app: MCPServer, store: CoachStore) -> None
     plan = store.get_plan(out["plan_id"])
     sess = next(s for w in plan.weeks for s in w.sessions if s.date.isoformat() == quality["date"])
     assert sess.kind.value == "easy" and sess.pace_hint and "(easy)" in sess.pace_hint
+
+
+def test_variety_sessions_make_easy_and_fit(app: MCPServer, store: CoachStore) -> None:
+    """R12: a long run with a faster part becomes an easy long run of the same distance, and
+    fartlek / variant long runs export as valid FIT workouts."""
+    from fit_tool.fit_file import FitFile
+
+    plan = setup_plan(app)
+    sessions = [s for w in plan["plan"]["weeks"] for s in w["sessions"]]
+    variant = next(s for s in sessions if s.get("long_variant"))
+    fartlek = next(s for s in sessions if s["kind"] == "fartlek")
+    upd = call(
+        app, "apply_plan_update", {"changes": [{"op": "make_easy", "date": variant["date"]}]}
+    )
+    assert upd["saved"]
+    saved = store.get_plan(plan["plan_id"])
+    easy_long = next(s for w in saved.weeks for s in w.sessions if str(s.date) == variant["date"])
+    assert easy_long.kind.value == "long" and easy_long.long_variant is None
+    assert easy_long.distance_km == variant["distance_km"]
+    for s in (fartlek, next(s for s in sessions if s.get("long_variant") and s is not variant)):
+        fit = call(
+            app, "export_plan", {"format": "fit", "from_date": s["date"], "to_date": s["date"]}
+        )
+        zf = zipfile.ZipFile(io.BytesIO(Path(fit["path"]).read_bytes()))
+        names = [n for n in zf.namelist() if n.endswith(".fit")]
+        assert len(names) == 1
+        assert FitFile.from_bytes(zf.read(names[0])).records  # CRC and structure are valid
+
+
+def test_scale_and_make_easy_keep_variety_sessions_consistent(
+    app: MCPServer, store: CoachStore
+) -> None:
+    from garmin_coach_mcp.coach.sessions import fartlek_pattern, session_steps
+
+    plan = setup_plan(app)
+    weeks = plan["plan"]["weeks"]
+    v_week = next(w for w in weeks if any(s.get("long_variant") for s in w["sessions"]))
+    f_week = next(w for w in weeks if any(s["kind"] == "fartlek" for s in w["sessions"]))
+    plain_long = next(
+        s
+        for w in weeks
+        for s in w["sessions"]
+        if s["kind"] == "long" and not s.get("long_variant") and s["date"] > "2026-11-20"
+    )
+    call(
+        app,
+        "apply_plan_update",
+        {
+            "changes": [
+                {"op": "scale_week", "week": v_week["index"], "factor": 0.3},
+                {"op": "scale_week", "week": f_week["index"], "factor": 0.6},
+                {"op": "make_easy", "date": plain_long["date"]},
+            ]
+        },
+    )
+    saved = store.get_plan(plan["plan_id"])
+    by_week = {w.index: w for w in saved.weeks}
+    long_s = next(s for s in by_week[v_week["index"]].sessions if s.kind.value == "long")
+    assert long_s.long_variant is None and long_s.fast_km is None
+    steps = session_steps(long_s, saved.easy_pace, None)
+    assert sum(st.duration_value for st in steps) / 1000 == pytest.approx(long_s.distance_km)
+    fart = next(s for s in by_week[f_week["index"]].sessions if s.kind.value == "fartlek")
+    reps, _on, _off = fartlek_pattern(fart.distance_km, saved.easy_pace)
+    assert f"{reps}x" in fart.description
+    easy = next(s for w in saved.weeks for s in w.sessions if str(s.date) == plain_long["date"])
+    assert easy.kind.value == "easy"  # a plain long run made easy is an easy run again

@@ -1,0 +1,94 @@
+# Push to Garmin — sends the next workouts of a saved Race Coach plan to Garmin Connect.
+# Run it by hand (Actions tab, or the GitHub mobile app):
+#   1. leave "apply" unchecked: dry run, the job summary lists what would be sent;
+#   2. run again with "apply" checked and the counts shown by the dry run.
+# Secrets: GARMIN_EMAIL, GARMIN_PASSWORD (account without two-step verification).
+name: Push to Garmin
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Really send to Garmin (unchecked = dry run)"
+        type: boolean
+        default: false
+      expected_count:
+        description: "Workouts to send, from the dry run (needed with apply)"
+        type: string
+        default: ""
+      expected_delete_count:
+        description: "Obsolete workouts to delete, from the dry run"
+        type: string
+        default: ""
+      from_date:
+        description: "First day YYYY-MM-DD (empty = today)"
+        type: string
+        default: ""
+      weeks:
+        description: "Weeks to send"
+        type: choice
+        options: ["1", "2", "3", "4"]
+        default: "2"
+      plan_id:
+        description: "Plan id (empty = latest plan of the latest goal)"
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: garmin-push
+  cancel-in-progress: false
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Garmin Race Coach
+        env:
+          REF: ${{ vars.GARMIN_COACH_REF || 'main' }}
+        run: pip install "git+https://github.com/mrosano1987/garmin-mcp-server-1.git@${REF}"
+
+      - name: Push to Garmin (dry run unless apply)
+        env:
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          GARMIN_TOKEN_DIR: ${{ runner.temp }}/garmin-tokens
+          APPLY: ${{ inputs.apply }}
+          EXPECTED_COUNT: ${{ inputs.expected_count }}
+          EXPECTED_DELETE_COUNT: ${{ inputs.expected_delete_count }}
+          FROM_DATE: ${{ inputs.from_date }}
+          WEEKS: ${{ inputs.weeks }}
+          PLAN_ID: ${{ inputs.plan_id }}
+        run: |
+          args=(--data-dir . --weeks "$WEEKS" --summary "$GITHUB_STEP_SUMMARY")
+          if [ -n "$PLAN_ID" ]; then args+=(--plan-id "$PLAN_ID"); fi
+          if [ -n "$FROM_DATE" ]; then args+=(--from-date "$FROM_DATE"); fi
+          if [ "$APPLY" = "true" ]; then
+            args+=(--apply --expected-count "$EXPECTED_COUNT")
+            if [ -n "$EXPECTED_DELETE_COUNT" ]; then
+              args+=(--expected-delete-count "$EXPECTED_DELETE_COUNT")
+            fi
+          fi
+          garmin-coach-push "${args[@]}"
+
+      # The plan records the Garmin workout ids: commit them even after a partial failure,
+      # so the next push never creates the same workouts twice.
+      - name: Save workout ids to this repository
+        if: ${{ always() && inputs.apply }}
+        run: |
+          git config user.name "garmin-coach-push"
+          git config user.email "garmin-coach-push@users.noreply.github.com"
+          git add -A goals plans
+          if ! git diff --cached --quiet; then
+            git commit -m "Garmin push: record workout ids"
+            git push
+          fi

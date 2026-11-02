@@ -52,7 +52,15 @@ class SessionKind(StrEnum):
     TEMPO = "tempo"
     INTERVALS = "intervals"
     RACE_PACE = "race_pace"
+    FARTLEK = "fartlek"
     RACE = "race"
+
+
+class LongVariant(StrEnum):
+    """Structured faster part inside a long run (R12)."""
+
+    PROGRESSIVE = "progressive"  # the last fast_km at a steady effort (Z3), no pace target
+    RACE_PACE = "race_pace"  # fast_km at goal race pace, in fast_blocks blocks
 
 
 class Phase(StrEnum):
@@ -184,6 +192,15 @@ class PlannedSession(_Model):
     description: str
     pace_hint: str | None = None
     est_duration_min: int | None = None
+    long_variant: LongVariant | None = Field(
+        default=None, description="Long runs only: structured faster part (see fast_km)."
+    )
+    fast_km: float | None = Field(
+        default=None, ge=0, description="Km of the long run at the faster effort."
+    )
+    fast_blocks: int | None = Field(
+        default=None, ge=1, le=3, description="Race-pace blocks (1 = at the end), 1 km easy apart."
+    )
     garmin_workout_id: int | None = Field(
         default=None, description="Set once the session was pushed to Garmin Connect."
     )

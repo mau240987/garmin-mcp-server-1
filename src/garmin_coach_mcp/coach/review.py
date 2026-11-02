@@ -95,6 +95,7 @@ def review_week(
             )
         too_hard = (
             s.kind in EASY_KINDS
+            and s.long_variant is None  # a long run with a faster part is not "easy" (R12)
             and status in ("done", "partial")
             and share is not None
             and share >= EASY_TOO_HARD
@@ -161,7 +162,14 @@ def review_week(
         quality = [
             s
             for s in nxt.sessions
-            if s.kind in (SessionKind.TEMPO, SessionKind.INTERVALS, SessionKind.RACE_PACE)
+            if s.kind
+            in (
+                SessionKind.TEMPO,
+                SessionKind.INTERVALS,
+                SessionKind.RACE_PACE,
+                SessionKind.FARTLEK,
+            )
+            or s.long_variant is not None
         ]
         fatigue = bool(recovery and len(recovery.signals) >= 2)
         if fatigue:
