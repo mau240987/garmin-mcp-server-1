@@ -18,7 +18,7 @@ notes predate MCP SDK 2.3 (snake_case `ToolAnnotations`, `mcp.server.mcpserver`)
 | C4 | Export md / ics / fit | **Done** | `coach/export.py`; FIT via `fit-tool` (BSD-3); FIT files decoded back in tests. Not yet imported on a real device. |
 | S1 | Claude skill + plugin | **Done — verified in Claude Code** | `plugins/garmin-race-coach` (MCP + skill), marketplace; `claude plugin validate` OK; real `claude -p` end-to-end run (goal → plan → ics) followed the skill. Claude Desktop/claude.ai zip not verified. |
 | S2 | ChatGPT / Gemini | **Done — not verified** | Generated from `coach/race-coach.md`: Gemini extension + `GEMINI.md`, ChatGPT system prompt; `docs/clients.md`. ChatGPT needs auth before remote use (`docs/roadmap-multiuser.md`). |
-| V | Independent review + E2E | Partial | Every piece (H, A1-A4, C1-C4) reviewed by a separate agent; all findings fixed (see below). E2E on real clients pending (S1-S2). |
+| V | Independent review + E2E | Partial | Every piece (H, A1-A4, C1-C4, S1-S2) reviewed by a separate agent; all findings fixed (see below). E2E verified in Claude Code; Claude Desktop, Gemini, ChatGPT and a real device import pending. |
 
 ## H — what was done
 
