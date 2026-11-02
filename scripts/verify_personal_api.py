@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -118,6 +119,48 @@ def request(method: str, path: str, headers: dict[str, str]) -> tuple[int, Any]:
         return 0, f"<network error: {type(exc).__name__}>"
 
 
+def request_raw(method: str, path: str, headers: dict[str, str]) -> tuple[int, str, bytes]:
+    """Return (status, content-type, raw body). Used only for the token call."""
+    req = urllib.request.Request(BASE + path, method=method, headers=headers)  # noqa: S310
+    try:
+        with _OPENER.open(req, timeout=30) as resp:
+            return resp.status, resp.headers.get("Content-Type", ""), resp.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.headers.get("Content-Type", ""), b""
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return 0, "", b""
+
+
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9._~+/=-]{8,8192}$")
+
+
+def parse_token(ctype: str, body: bytes) -> tuple[str | None, str]:
+    """Extract the access token and describe the response SHAPE (never the value)."""
+    text = body.decode("utf-8", errors="replace").strip()
+    try:
+        data: Any = json.loads(text)
+        shape = f"JSON {type(data).__name__}"
+    except ValueError:
+        data, shape = text, "plain text"
+    token: str | None = None
+    if isinstance(data, str):
+        token = data.strip()
+    elif isinstance(data, dict):
+        shape += f" with keys {sorted(data)}"
+        for k in ("access_token", "accessToken", "token"):
+            if isinstance(data.get(k), str):
+                token = data[k]
+                break
+    desc = f"content-type={ctype or '-'}; body {len(body)} bytes; shape: {shape}"
+    if token:
+        desc += (
+            f"; token length {len(token)}, dots {token.count('.')}"
+            f" ({'JWT-like' if token.count('.') == 2 else 'not JWT-like'}),"
+            f" charset {'ok' if _TOKEN_RE.match(token) else 'UNEXPECTED'}"
+        )
+    return token, desc
+
+
 def field_report(payload: Any, fields: list[str]) -> str:
     sample = payload[0] if isinstance(payload, list) and payload else payload
     if isinstance(payload, list) and not payload:
@@ -143,22 +186,26 @@ def main() -> int:
     day = dt.date.fromisoformat(sys.argv[1]) if len(sys.argv) > 1 else dt.date.today()
     week_ago = day - dt.timedelta(days=6)
 
-    status, token_payload = request("POST", TOKEN_PATH, {"Authorization": f"ApiKey {key}"})
+    status, ctype, body = request_raw("POST", TOKEN_PATH, {"Authorization": f"ApiKey {key}"})
     print(f"# Personal API empirical check ({dt.date.today()}, day={day})\n")
-    keys = (
-        sorted(token_payload) if isinstance(token_payload, dict) else type(token_payload).__name__
-    )
-    print(f"- token endpoint: HTTP {status}; response keys: {keys}")
-    token = None
-    if isinstance(token_payload, dict):
-        for k in ("access_token", "accessToken", "token"):
-            if isinstance(token_payload.get(k), str):
-                token = token_payload[k]
-                break
-    if not token:
-        print("- could not find an access token in the response; stopping.")
+    token, desc = parse_token(ctype, body) if status == 200 else (None, "-")
+    print(f"- token endpoint: HTTP {status}; {desc}")
+    if not token or not _TOKEN_RE.match(token):
+        print("- could not find a usable access token in the response; stopping.")
         return 1
-    auth = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+
+    # Which Authorization scheme do data calls accept? (Bearer is assumed by the server.)
+    probe = DAY_CHECKS["usersummary/daily"][0].format(d=day, w=week_ago)
+    scheme_used = None
+    for label, value in (("Bearer <token>", f"Bearer {token}"), ("<token> (no prefix)", token)):
+        code, _ = request("GET", probe, {"Authorization": value, "Accept": "application/json"})
+        print(f"- auth scheme {label}: HTTP {code}")
+        if code == 200 and scheme_used is None:
+            scheme_used = value
+    if scheme_used is None:
+        print("- no tested auth scheme was accepted; stopping.")
+        return 1
+    auth = {"Authorization": scheme_used, "Accept": "application/json"}
 
     print("\n| Check | HTTP | Fields |\n|---|---|---|")
     activity_id = None
