@@ -1,0 +1,16 @@
+{
+  "name": "garmin-race-coach",
+  "version": "2.0.0-dev0",
+  "description": "Race Coach: Garmin data, safe training plans and weekly adaptation (local MCP server + race-coach skill).",
+  "author": {
+    "name": "garmin-coach-mcp contributors"
+  },
+  "license": "AGPL-3.0-only",
+  "repository": "https://github.com/mrosano1987/garmin-mcp-server-1",
+  "keywords": [
+    "garmin",
+    "running",
+    "training-plan",
+    "mcp"
+  ]
+}

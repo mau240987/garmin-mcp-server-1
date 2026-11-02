@@ -16,3 +16,12 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+# Python build artifacts
+dist/
+build/
+*.egg-info/

@@ -1,3 +1,6 @@
-mcp>=1.0.0
-garminconnect>=0.3.0
-pydantic>=2.0.0
+# Runtime dependencies (kept for `pip install -r requirements.txt` users).
+# The canonical list is in pyproject.toml.
+mcp>=2.3,<3
+garminconnect>=0.3.20,<0.4
+pydantic>=2.7,<3
+fit-tool>=0.9.17,<0.10

@@ -1,0 +1,50 @@
+{
+  "name": "garmin-race-coach",
+  "version": "2.0.0-dev0",
+  "description": "Race Coach on Garmin data: goals, safe training plans, weekly adaptation.",
+  "mcpServers": {
+    "garmin-coach": {
+      "command": "garmin-coach-mcp",
+      "args": []
+    }
+  },
+  "contextFileName": "GEMINI.md",
+  "settings": [
+    {
+      "name": "Garmin Personal API key",
+      "description": "Garmin Personal API key",
+      "envVar": "GARMIN_PERSONAL_API_KEY",
+      "sensitive": true
+    },
+    {
+      "name": "Personal API key expiry date (YYYY-MM-DD)",
+      "description": "Personal API key expiry date (YYYY-MM-DD)",
+      "envVar": "GARMIN_PERSONAL_API_KEY_EXPIRES",
+      "sensitive": false
+    },
+    {
+      "name": "Allow unofficial reads (true/false)",
+      "description": "Allow unofficial reads (true/false)",
+      "envVar": "GARMIN_ALLOW_UNOFFICIAL_READS",
+      "sensitive": false
+    },
+    {
+      "name": "Allow unofficial workout writes (true/false)",
+      "description": "Allow unofficial workout writes (true/false)",
+      "envVar": "GARMIN_ALLOW_UNOFFICIAL_WRITES",
+      "sensitive": false
+    },
+    {
+      "name": "Token directory of a previous `garmin-coach-mcp --login`",
+      "description": "Token directory of a previous `garmin-coach-mcp --login`",
+      "envVar": "GARMIN_TOKEN_DIR",
+      "sensitive": false
+    },
+    {
+      "name": "Where goals, plans and exports are stored",
+      "description": "Where goals, plans and exports are stored",
+      "envVar": "GARMIN_COACH_DATA_DIR",
+      "sensitive": false
+    }
+  ]
+}
