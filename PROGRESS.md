@@ -59,3 +59,22 @@ the legacy server did not start on a clean install (MCP SDK 2.x removed `mcp.ser
    default 600 s for time steps.
 Also: missing `workoutId` is an error; "created but not scheduled" plan entries name the workout
 id (avoids duplicates); verification script does not follow redirects and has no tracebacks.
+
+## Independent review of A1+A2 — findings and fixes
+
+Confirmed by the reviewer: every official call matches the spec (paths, query names, shapes);
+router policy correct in all four configurations; unofficial-only behaviour unchanged.
+
+1. 3xx / HTML token bodies were accepted as tokens → only 2xx accepted, redirects are explicit
+   non-retryable errors, plain-text tokens must look like tokens, request-building errors mapped
+   without echoing headers.
+2. Persistent data-call 401 renewed the token on every call → no renewal of a token younger than
+   60 s, concurrent renewals deduplicated, then a cached "token rejected" error.
+3. Data-call 401/403 suggested GARMIN_EMAIL/PASSWORD → now points to the Personal API key.
+4. Transient token-fetch failures were cached for 60 s → only a rejected key is cached;
+   transient failures are retried.
+5. Readiness/workouts hint now depends on whether an unofficial backend exists.
+6. Short `expires_in` honoured (renewal at half-life when shorter than the 5-min margin).
+7. Unreadable token directory no longer crashes startup.
+Also found while fixing: retry backoff ignored the test patch (default arg bound at import), so
+tests really slept; suite now 126 tests in ~3 s.

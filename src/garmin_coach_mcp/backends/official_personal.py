@@ -14,7 +14,9 @@ Assumptions, to confirm with scripts/verify_personal_api.py (marked [DEDOTTO] in
 from __future__ import annotations
 
 import datetime as dt
+import http.client
 import json
+import re
 import threading
 import time
 import urllib.error
@@ -47,6 +49,15 @@ DEFAULT_TOKEN_TTL_S = 24 * 3600
 TOKEN_REFRESH_MARGIN_S = 300
 KEY_EXPIRY_WARNING_DAYS = 14
 TOKEN_FAILURE_COOLDOWN_S = 60.0
+#: A token younger than this that is rejected with 401 is not renewed again: the key (or the
+#: assumed Bearer scheme) is the problem, and renewing on every call would hammer Garmin.
+MIN_TOKEN_AGE_FOR_RENEWAL_S = 60.0
+_PLAIN_TOKEN_RE = re.compile(r"^[A-Za-z0-9._~+/=-]{8,8192}$")
+
+KEY_REMEDIATION = (
+    "The Personal API key is wrong, revoked or expired, or does not allow this data. Create a "
+    "new key in Garmin Connect Web (Personal API Key page) and update GARMIN_PERSONAL_API_KEY."
+)
 ACTIVITY_PAGE_SIZE = 100
 MAX_ACTIVITY_PAGES = 50
 
@@ -88,15 +99,17 @@ def _extract_token(body: bytes) -> tuple[str | None, float]:
     try:
         data: Any = json.loads(text) if text else None
     except ValueError:
-        data = text  # plain-text token
+        data = text  # plain-text token (format undocumented)
     if isinstance(data, str):
-        return (data.strip() or None), DEFAULT_TOKEN_TTL_S
+        # Only accept something that looks like a token, never e.g. an HTML page.
+        candidate = data.strip()
+        return (candidate if _PLAIN_TOKEN_RE.match(candidate) else None), DEFAULT_TOKEN_TTL_S
     if isinstance(data, dict):
         token = next(
             (
                 data[k]
                 for k in ("access_token", "accessToken", "token")
-                if isinstance(data.get(k), str)
+                if isinstance(data.get(k), str) and _PLAIN_TOKEN_RE.match(data[k])
             ),
             None,
         )
@@ -139,6 +152,7 @@ class PersonalApiClient:
         self._lock = threading.Lock()
         self._token: str | None = None
         self._token_deadline = 0.0
+        self._token_issued = 0.0
         self._token_failure: tuple[float, GarminMCPError] | None = None
 
     def __repr__(self) -> str:  # never expose key/token
@@ -147,48 +161,82 @@ class PersonalApiClient:
     # -- token ------------------------------------------------------------------------
     def _send(self, method: str, url: str, headers: Mapping[str, str]) -> HttpResponse:
         try:
-            return self._transport(method, url, headers, self._timeout)
-        except (OSError, TimeoutError) as exc:
+            resp = self._transport(method, url, headers, self._timeout)
+        except (OSError, TimeoutError, http.client.HTTPException) as exc:
             raise UpstreamServiceError(
                 "Network error talking to the Garmin Personal API.",
                 remediation="Check the network connection and retry.",
                 cause=exc,
             ) from exc
+        except ValueError:  # e.g. an invalid header value; never echo it
+            err = UpstreamServiceError(
+                "Could not build a valid request to the Garmin Personal API.",
+                remediation="Check GARMIN_PERSONAL_API_KEY for stray characters.",
+            )
+            err.retryable = False
+            raise err from None
+        if 300 <= resp.status < 400:
+            err = UpstreamServiceError(
+                f"The Garmin Personal API answered with a redirect (HTTP {resp.status}).",
+                remediation=(
+                    "Redirects are not followed so credentials are never forwarded. Check "
+                    "GARMIN_PERSONAL_API_REGION and run scripts/verify_personal_api.py."
+                ),
+            )
+            err.retryable = False
+            raise err
+        return resp
 
     def _fetch_token(self) -> str:
         resp = self._send("POST", self._base + TOKEN_PATH, {"Authorization": f"ApiKey {self._key}"})
         if resp.status in (401, 403):
             raise AuthenticationError(
                 f"Garmin rejected the Personal API key (HTTP {resp.status}).",
-                remediation=(
-                    "The key is wrong, revoked or expired. Create a new key in Garmin Connect "
-                    "Web (Personal API Key page) and update GARMIN_PERSONAL_API_KEY."
-                ),
+                remediation=KEY_REMEDIATION,
             )
-        if resp.status >= 400:
+        if not 200 <= resp.status < 300:
             raise error_for_status(resp.status, None, "Personal API token request")
         token, ttl = _extract_token(resp.body)
         if not token:
-            raise UpstreamServiceError(
+            err = UpstreamServiceError(
                 "The Personal API token response had no recognizable access token.",
                 remediation=(
                     "Run scripts/verify_personal_api.py and report the response keys; the "
                     "token format is not documented by Garmin."
                 ),
             )
-        self._token_deadline = self._clock() + max(60.0, ttl - TOKEN_REFRESH_MARGIN_S)
+            err.retryable = False  # the same response would come back
+            raise err
+        now = self._clock()
+        self._token_issued = now
+        self._token_deadline = now + ttl - min(TOKEN_REFRESH_MARGIN_S, ttl / 2)
         return token
 
-    def token(self, *, force: bool = False) -> str:
+    def token(self, *, rejected: str | None = None) -> str:
+        """Current access token. `rejected`: a token the API just refused with 401."""
         with self._lock:
             now = self._clock()
-            if not force and self._token and now < self._token_deadline:
+            if rejected is not None:
+                if self._token and self._token != rejected:
+                    return self._token  # another thread already renewed it
+                if now - self._token_issued < MIN_TOKEN_AGE_FOR_RENEWAL_S:
+                    err = AuthenticationError(
+                        "Garmin rejected a freshly issued Personal API access token (HTTP 401).",
+                        remediation=KEY_REMEDIATION,
+                    )
+                    err.during_login = True
+                    self._token = None
+                    self._token_failure = (now, err)
+                    raise err
+                self._token = None
+            if self._token and now < self._token_deadline:
                 return self._token
             if self._token_failure and now - self._token_failure[0] < TOKEN_FAILURE_COOLDOWN_S:
                 raise self._token_failure[1]
             try:
                 self._token = self._fetch_token()
-            except GarminMCPError as exc:
+            except AuthenticationError as exc:
+                # Only a rejected key is cached; transient errors stay retryable.
                 exc.during_login = True
                 self._token = None
                 self._token_failure = (now, exc)
@@ -203,9 +251,15 @@ class PersonalApiClient:
         url = self._base + path + (f"?{urlencode(query)}" if query else "")
 
         def once() -> Any:
-            resp = self._send("GET", url, self._auth())
-            if resp.status == 401:  # token expired early or revoked: one fresh token
-                resp = self._send("GET", url, self._auth(force=True))
+            token = self.token()
+            resp = self._send("GET", url, self._headers(token))
+            if resp.status == 401:  # token expired early or revoked: at most one renewal
+                resp = self._send("GET", url, self._headers(self.token(rejected=token)))
+            if resp.status in (401, 403):
+                raise AuthenticationError(
+                    f"Garmin refused {operation} with the Personal API token (HTTP {resp.status}).",
+                    remediation=KEY_REMEDIATION,
+                )
             if resp.status == 204:
                 return None
             if resp.status >= 400:
@@ -223,8 +277,9 @@ class PersonalApiClient:
 
         return call_with_retry(once, operation=operation, retries=self._retries)
 
-    def _auth(self, *, force: bool = False) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.token(force=force)}", "Accept": "application/json"}
+    @staticmethod
+    def _headers(token: str) -> dict[str, str]:
+        return {"Authorization": f"Bearer {token}", "Accept": "application/json"}
 
 
 def _list(value: Any) -> list[dict[str, Any]]:

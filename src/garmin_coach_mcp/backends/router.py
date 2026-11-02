@@ -23,17 +23,13 @@ from garmin_coach_mcp.backends.base import (
 )
 from garmin_coach_mcp.errors import CapabilityUnavailableError
 
-_READ_HINTS: dict[Capability, str] = {
+_READ_WHAT: dict[Capability, str] = {
     Capability.TRAINING_READINESS: (
         "Training Readiness is not offered by the official Garmin Personal API. Use HRV, "
-        "resting HR, sleep and Body Battery instead, or set GARMIN_ALLOW_UNOFFICIAL_READS=true "
-        "(unofficial access, see docs/api-coverage.md)."
+        "resting HR, sleep and Body Battery instead"
     ),
-    Capability.WORKOUTS_LIST: (
-        "The workout library is not offered by the official Garmin Personal API. Set "
-        "GARMIN_ALLOW_UNOFFICIAL_READS=true and configure GARMIN_EMAIL/GARMIN_PASSWORD to use "
-        "unofficial access."
-    ),
+    Capability.WORKOUTS_LIST: "The workout library is not offered by the official Garmin "
+    "Personal API",
 }
 _WRITE_HINT = (
     "Creating, scheduling or deleting workouts needs Garmin's Training API (Starter tier) or "
@@ -82,11 +78,22 @@ class BackendRouter:
             for backend in self.backends:
                 if not backend.official and cap in backend.capabilities():
                     return backend
-        hint = _WRITE_HINT if cap in WRITE_CAPABILITIES else _READ_HINTS.get(cap)
+        hint = _WRITE_HINT if cap in WRITE_CAPABILITIES else self._read_hint(cap)
         raise CapabilityUnavailableError(
             f"No configured Garmin backend may provide '{cap.value}'.",
             remediation=hint or "Configure a backend that offers it (see docs/api-coverage.md).",
         )
+
+    def _read_hint(self, cap: Capability) -> str:
+        what = _READ_WHAT.get(cap, f"'{cap.value}' is not offered by the configured backends")
+        if any(not b.official for b in self.backends):
+            how = "set GARMIN_ALLOW_UNOFFICIAL_READS=true (unofficial access)"
+        else:
+            how = (
+                "configure the unofficial backend (GARMIN_EMAIL/GARMIN_PASSWORD) and set "
+                "GARMIN_ALLOW_UNOFFICIAL_READS=true"
+            )
+        return f"{what}; or {how}. See docs/api-coverage.md."
 
     def can(self, cap: Capability) -> bool:
         try:

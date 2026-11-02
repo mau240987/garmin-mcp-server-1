@@ -153,15 +153,108 @@ def test_token_renewed_before_expiry(
     assert transport.count("POST", TOKEN_PATH) == 2
 
 
-def test_401_on_data_call_forces_one_new_token(
-    official: OfficialPersonalBackend, transport: FakeTransport
+def test_401_on_data_call_renews_an_old_token_once(
+    official: OfficialPersonalBackend, transport: FakeTransport, clock: list[float]
 ) -> None:
+    official.daily_summary(DAY)  # token issued
+    clock[0] += 3600  # an hour later Garmin revokes it early
     transport.routes[("GET", "/usersummary-service/usersummary/daily")] = [
         HttpResponse(401),
         j({"totalSteps": 1}),
     ]
     assert official.daily_summary(DAY) == {"totalSteps": 1}
     assert transport.count("POST", TOKEN_PATH) == 2
+
+
+def test_persistent_401_does_not_hammer_token_endpoint(
+    official: OfficialPersonalBackend, transport: FakeTransport
+) -> None:
+    transport.routes[("GET", "/usersummary-service/usersummary/daily")] = [HttpResponse(401)]
+    for _ in range(5):
+        with pytest.raises(AuthenticationError) as info:
+            official.daily_summary(DAY)
+        assert "GARMIN_PERSONAL_API_KEY" in str(info.value)
+        assert "GARMIN_PASSWORD" not in str(info.value)
+    assert transport.count("POST", TOKEN_PATH) == 1
+    assert transport.count("GET", "/usersummary-service/usersummary/daily") == 1
+
+
+def test_data_403_points_to_the_key(
+    official: OfficialPersonalBackend, transport: FakeTransport
+) -> None:
+    transport.routes[("GET", "/usersummary-service/usersummary/daily")] = [HttpResponse(403)]
+    with pytest.raises(AuthenticationError) as info:
+        official.daily_summary(DAY)
+    assert "GARMIN_PERSONAL_API_KEY" in str(info.value)
+
+
+@pytest.mark.parametrize("status", [301, 302, 307])
+def test_redirects_are_errors_not_tokens_or_empty_data(
+    official: OfficialPersonalBackend, transport: FakeTransport, status: int
+) -> None:
+    transport.routes[("POST", TOKEN_PATH)] = [HttpResponse(status, b"<html>moved</html>")]
+    with pytest.raises(UpstreamServiceError, match="redirect"):
+        official.daily_summary(DAY)
+    assert transport.count("POST", TOKEN_PATH) == 1  # not retried
+
+    transport.routes[("POST", TOKEN_PATH)] = [j({"access_token": TOKEN})]
+    transport.routes[("GET", "/activitylist-service/activities/search/activities")] = [
+        HttpResponse(status)
+    ]
+    with pytest.raises(UpstreamServiceError, match="redirect"):
+        official.list_activities(0, 5)
+
+
+def test_html_token_body_is_rejected(
+    official: OfficialPersonalBackend, transport: FakeTransport
+) -> None:
+    transport.routes[("POST", TOKEN_PATH)] = [
+        HttpResponse(200, b"<html><body>Sign in</body></html>", {"Content-Type": "text/html"})
+    ]
+    with pytest.raises(UpstreamServiceError, match="no recognizable access token"):
+        official.daily_summary(DAY)
+    assert not any(r[0] == "GET" for r in transport.requests)
+
+
+def test_transient_token_failure_is_retried_and_not_cached(
+    official: OfficialPersonalBackend, transport: FakeTransport
+) -> None:
+    transport.routes[("POST", TOKEN_PATH)] = [
+        HttpResponse(503),
+        j({"access_token": TOKEN}),
+    ]
+    assert official.daily_summary(DAY)["totalSteps"] == 9000
+    assert transport.count("POST", TOKEN_PATH) == 2
+
+
+def test_rejected_key_cooldown_expires(
+    official: OfficialPersonalBackend, transport: FakeTransport, clock: list[float]
+) -> None:
+    transport.routes[("POST", TOKEN_PATH)] = [HttpResponse(401), j({"access_token": TOKEN})]
+    with pytest.raises(AuthenticationError):
+        official.daily_summary(DAY)
+    clock[0] += 61
+    assert official.daily_summary(DAY)["totalSteps"] == 9000
+
+
+def test_short_expires_in_is_honoured(
+    official: OfficialPersonalBackend, transport: FakeTransport, clock: list[float]
+) -> None:
+    transport.routes[("POST", TOKEN_PATH)] = [j({"access_token": TOKEN, "expires_in": 30})]
+    official.daily_summary(DAY)
+    clock[0] += 20  # past half of a 30 s lifetime
+    official.daily_summary(DAY)
+    assert transport.count("POST", TOKEN_PATH) == 2
+
+
+def test_invalid_header_value_is_mapped_without_echo(official: OfficialPersonalBackend) -> None:
+    def bad(*_a: Any) -> HttpResponse:
+        raise ValueError("Invalid header value b'Bearer tok-SENTINEL'")
+
+    official.client._transport = bad
+    with pytest.raises(UpstreamServiceError) as info:
+        official.daily_summary(DAY)
+    assert "SENTINEL" not in str(info.value)
 
 
 def test_rejected_key_fails_fast_and_never_leaks(
@@ -318,7 +411,10 @@ def test_router_unofficial_reads_are_opt_in(
     strict = BackendRouter([official, unofficial])
     with pytest.raises(CapabilityUnavailableError) as info:
         strict.select(Capability.TRAINING_READINESS)
-    assert "GARMIN_ALLOW_UNOFFICIAL_READS" in str(info.value)
+    assert "set GARMIN_ALLOW_UNOFFICIAL_READS=true (unofficial" in str(info.value)
+    with pytest.raises(CapabilityUnavailableError) as only:
+        BackendRouter([official]).select(Capability.TRAINING_READINESS)
+    assert "configure the unofficial backend" in str(only.value)
     relaxed = BackendRouter([official, unofficial], allow_unofficial_reads=True)
     assert relaxed.select(Capability.TRAINING_READINESS) is unofficial
     assert relaxed.select(Capability.DAILY_SUMMARY) is official
@@ -445,3 +541,53 @@ def test_key_expiry_notice_reaches_tool_output(transport: FakeTransport) -> None
     out = call(app, "get_activities", {})
     assert out["notices"] and "3 day(s)" in out["notices"][0]
     assert "Notice:" in out["text"]
+
+
+def test_health_summary_official_total_failure_is_tool_error(
+    official: OfficialPersonalBackend, transport: FakeTransport
+) -> None:
+    for path in (
+        "/usersummary-service/usersummary/daily",
+        "/sleep-service/sleep/dailySleep",
+        f"/hrv-service/hrv/{DAY.isoformat()}",
+    ):
+        transport.routes[("GET", path)] = [HttpResponse(500)]
+    app = build_server(BackendRouter([official]))
+    with pytest.raises(ToolError):
+        anyio.run(app.call_tool, "get_health_summary", {"date_str": DAY.isoformat()})
+
+
+def test_urllib_transport_does_not_follow_redirects() -> None:
+    """Real urllib transport against a local server: redirect returned, header not forwarded."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from garmin_coach_mcp.backends.official_personal import urllib_transport
+
+    seen: list[str | None] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            seen.append(self.headers.get("Authorization"))
+            if self.path == "/start":
+                self.send_response(302)
+                self.send_header("Location", "/elsewhere")
+                self.end_headers()
+            else:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+        def log_message(self, *_a: Any) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/start"
+        resp = urllib_transport("GET", url, {"Authorization": "Bearer x"}, 5)
+    finally:
+        server.shutdown()
+    assert resp.status == 302
+    assert seen == ["Bearer x"]  # only the first request; the redirect was not followed

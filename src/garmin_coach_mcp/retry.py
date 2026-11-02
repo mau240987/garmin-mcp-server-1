@@ -23,7 +23,7 @@ def call_with_retry[T](
     *,
     operation: str,
     retries: int,
-    sleep: Callable[[float], None] = time.sleep,
+    sleep: Callable[[float], None] | None = None,
     base_delay: float = 1.0,
     max_delay: float = 10.0,
 ) -> T:
@@ -48,5 +48,5 @@ def call_with_retry[T](
                 retries,
                 delay,
             )
-            sleep(delay)
+            (sleep or time.sleep)(delay)  # resolved at call time (patchable)
             attempt += 1

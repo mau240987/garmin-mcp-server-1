@@ -125,5 +125,9 @@ class Settings:
     @property
     def has_unofficial_session(self) -> bool:
         """Credentials or stored tokens exist for the unofficial backend (no network check)."""
-        d = self.token_dir
-        return self.has_credentials or (d.is_dir() and any(d.iterdir()))
+        if self.has_credentials:
+            return True
+        try:
+            return self.token_dir.is_dir() and any(self.token_dir.iterdir())
+        except OSError:  # unreadable token dir: not a usable session
+            return False
