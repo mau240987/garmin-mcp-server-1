@@ -12,7 +12,9 @@ notes predate MCP SDK 2.3 (snake_case `ToolAnnotations`, `mcp.server.mcpserver`)
 | A2 | `OfficialPersonalBackend` | **Done — verified on the real API** (2026-11-02, owner's machine) | Token = plain-text JWT, `Bearer` confirmed, all used endpoints 200 with expected fields. See `docs/api-coverage.md` §1.2. |
 | A3 | `UnofficialBackend` + `GARMIN_ALLOW_UNOFFICIAL_WRITES` | **Done** | Writes off by default in every configuration (behaviour change, documented in README); nothing reaches Garmin when disabled. |
 | A4 | `OfficialStarterBackend` stub + requirements | **Done (stub)** | Declares no capabilities; router prefers it for writes once it does (tested). Requirements: `docs/starter-requirements.md`. |
-| C1–C4 | Goal/plan model, plan engine, new tools, export | Not started | |
+| C1 | Goal/plan model + local storage | **Done** | `coach/models.py`, `coach/storage.py` (JSON, atomic, 0600, `GARMIN_COACH_DATA_DIR`). |
+| C2 | Deterministic plan engine | **Done** | `coach/engine.py`, rules in `docs/plan-engine.md`; 5 brief cases + 2,160-case invariant matrix. |
+| C3–C4 | New MCP tools, export | Not started | |
 | S1–S2 | Claude skill/plugin, ChatGPT/Gemini instructions | Not started | |
 | V | Independent review + E2E | Partial | Review of H done by a separate agent; all findings fixed (see below). E2E pending later pieces. |
 

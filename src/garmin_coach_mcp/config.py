@@ -12,6 +12,7 @@ from typing import Any
 from garmin_coach_mcp.errors import ConfigurationError
 
 DEFAULT_TOKEN_DIR = "~/.garmin-coach-mcp/tokens"  # noqa: S105 - a path, not a secret
+DEFAULT_COACH_DATA_DIR = "~/.garmin-coach-mcp/data"
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
 _TRUE = {"1", "true", "yes", "on"}
@@ -57,6 +58,8 @@ class Settings:
     email: str | None = field(default=None, repr=False)
     password: str | None = field(default=None, repr=False)
     token_dir: Path = field(default_factory=lambda: Path(DEFAULT_TOKEN_DIR).expanduser())
+    #: Race goals and plans (local JSON, never in the repository).
+    coach_data_dir: Path = field(default_factory=lambda: Path(DEFAULT_COACH_DATA_DIR).expanduser())
     read_only: bool = False
     max_retries: int = 2
     log_level: str = "INFO"
@@ -102,7 +105,10 @@ class Settings:
                 remediation="Use 'cn' only for Garmin China accounts.",
             )
 
+        coach_dir = Path(source.get("GARMIN_COACH_DATA_DIR") or DEFAULT_COACH_DATA_DIR).expanduser()
+
         settings = cls(
+            coach_data_dir=coach_dir.absolute(),
             email=(source.get("GARMIN_EMAIL") or None),
             password=(source.get("GARMIN_PASSWORD") or None),
             token_dir=token_dir,
