@@ -825,3 +825,42 @@ def test_variety_sessions_make_easy_and_fit(app: MCPServer, store: CoachStore) -
         names = [n for n in zf.namelist() if n.endswith(".fit")]
         assert len(names) == 1
         assert FitFile.from_bytes(zf.read(names[0])).records  # CRC and structure are valid
+
+
+def test_scale_and_make_easy_keep_variety_sessions_consistent(
+    app: MCPServer, store: CoachStore
+) -> None:
+    from garmin_coach_mcp.coach.sessions import fartlek_pattern, session_steps
+
+    plan = setup_plan(app)
+    weeks = plan["plan"]["weeks"]
+    v_week = next(w for w in weeks if any(s.get("long_variant") for s in w["sessions"]))
+    f_week = next(w for w in weeks if any(s["kind"] == "fartlek" for s in w["sessions"]))
+    plain_long = next(
+        s
+        for w in weeks
+        for s in w["sessions"]
+        if s["kind"] == "long" and not s.get("long_variant") and s["date"] > "2026-11-20"
+    )
+    call(
+        app,
+        "apply_plan_update",
+        {
+            "changes": [
+                {"op": "scale_week", "week": v_week["index"], "factor": 0.3},
+                {"op": "scale_week", "week": f_week["index"], "factor": 0.6},
+                {"op": "make_easy", "date": plain_long["date"]},
+            ]
+        },
+    )
+    saved = store.get_plan(plan["plan_id"])
+    by_week = {w.index: w for w in saved.weeks}
+    long_s = next(s for s in by_week[v_week["index"]].sessions if s.kind.value == "long")
+    assert long_s.long_variant is None and long_s.fast_km is None
+    steps = session_steps(long_s, saved.easy_pace, None)
+    assert sum(st.duration_value for st in steps) / 1000 == pytest.approx(long_s.distance_km)
+    fart = next(s for s in by_week[f_week["index"]].sessions if s.kind.value == "fartlek")
+    reps, _on, _off = fartlek_pattern(fart.distance_km, saved.easy_pace)
+    assert f"{reps}x" in fart.description
+    easy = next(s for w in saved.weeks for s in w.sessions if str(s.date) == plain_long["date"])
+    assert easy.kind.value == "easy"  # a plain long run made easy is an easy run again

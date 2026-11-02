@@ -18,12 +18,18 @@ DEFAULT_EASY_S_PER_KM = 390.0
 GAP_KM = 1.0  # easy running between race-pace blocks of a long run
 
 
-def fartlek_pattern(km: float) -> tuple[int, int, int]:
-    """(repeats, fast s, easy s) of a fartlek of `km` km. Shared by the engine (description)
+MIN_FARTLEK_EASY_KM = 2.0  # warm-up + cool-down of a fartlek, at least
+
+
+def fartlek_pattern(km: float, easy_pace: float | None = None) -> tuple[int, int, int]:
+    """(repeats, fast s, easy s) of a fartlek of `km` km, sized so that the timed block plus
+    MIN_FARTLEK_EASY_KM of easy running fits the distance. Shared by the engine (description)
     and the workout steps, so both always describe the same session."""
-    if km - WARMUP_KM - COOLDOWN_KM < 5.0:
-        return 8, 60, 60
-    return 5, 180, 120
+    pace = easy_pace or DEFAULT_EASY_S_PER_KM
+    on_s, off_s, reps = (60, 60, 8) if km - WARMUP_KM - COOLDOWN_KM < 5.0 else (180, 120, 5)
+    while reps > 3 and km - reps * (on_s + off_s) / pace < MIN_FARTLEK_EASY_KM:
+        reps -= 1
+    return reps, on_s, off_s
 
 
 def _pace(seconds_per_km: float) -> str:
@@ -65,10 +71,11 @@ def session_steps(
     if kind in (SessionKind.EASY, SessionKind.LONG, SessionKind.MEDIUM_LONG):
         return [_run(km, "run", easy)]
     if kind is SessionKind.FARTLEK:
-        reps, on_s, off_s = fartlek_pattern(km)
+        reps, on_s, off_s = fartlek_pattern(km, easy_pace)
         block_km = reps * (on_s + off_s) / (easy_pace or DEFAULT_EASY_S_PER_KM)
+        warmup = max(1.0, min(WARMUP_KM, (km - block_km) / 2))
         return [
-            _run(WARMUP_KM, "warmup", easy),
+            _run(warmup, "warmup", easy),
             RepeatStep(
                 repeat_count=reps,
                 steps=[
@@ -80,7 +87,7 @@ def session_steps(
                     ),
                 ],
             ),
-            _run(max(1.0, km - WARMUP_KM - block_km), "cooldown", easy),
+            _run(max(1.0, km - warmup - block_km), "cooldown", easy),
         ]
     if kind is SessionKind.STRIDES:
         body = max(1.0, km - 1.0)
@@ -127,10 +134,12 @@ def _long_with_variant(
     rp: tuple[float, float] | None,
 ) -> list[WorkoutStep | RepeatStep]:
     km, fast = session.distance_km, session.fast_km or 0.0
+    blocks = session.fast_blocks or 1
+    if km - fast - (blocks if blocks > 1 else 0) * GAP_KM < 1.0:
+        return [_run(km, "run", easy)]  # inconsistent faster part: plain easy long run
     if session.long_variant is LongVariant.PROGRESSIVE or rp is None:
         # Steady finish, effort-based: no pace target without a goal pace.
         return [_run(km - fast, "run", easy), _run(fast, "run", None)]
-    blocks = session.fast_blocks or 1
     if blocks == 1:
         return [_run(km - fast, "run", easy), _run(fast, "run", rp)]
     return [

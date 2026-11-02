@@ -625,3 +625,36 @@ def test_invariants_with_target_times(
     )
     plan = build_plan(goal, BASELINES[base_name], MONDAY)
     check_invariants(plan, goal, MONDAY)
+
+
+# Regressions from the independent review of R12.
+
+
+@pytest.mark.parametrize("pace", [270.0, 300.0, 360.0, 450.0, None])
+@pytest.mark.parametrize("km", [5.0, 6.0, 7.5, 9.0, 11.0, 16.0])
+def test_fartlek_steps_fit_the_planned_distance(km: float, pace: float | None) -> None:
+    from garmin_coach_mcp.coach.engine import fartlek_session
+    from garmin_coach_mcp.coach.models import PlannedSession
+
+    _k, zone, desc = fartlek_session(km, pace)
+    s = PlannedSession(
+        date=MONDAY, kind=SessionKind.FARTLEK, distance_km=km, zone=zone, description=desc
+    )
+    steps = session_steps(s, pace, None)
+    reps = next(st for st in steps if isinstance(st, RepeatStep))
+    block_s = reps.repeat_count * sum(st.duration_value for st in reps.steps)
+    assert f"{reps.repeat_count}x" in desc
+    est = _step_km(steps) + block_s / (pace or 390.0)
+    assert abs(est - km) <= 1.0, (km, pace, est)
+
+
+def test_marathon_without_target_keeps_marathon_effort_finish() -> None:
+    plan = build_plan(_paris_goal(target_time_s=None), PARIS_LIKE, dt.date(2026, 11, 9))
+    longs = [
+        s
+        for w in plan.weeks
+        if w.phase is Phase.SPECIFIC and not w.is_recovery
+        for s in w.sessions
+        if s.kind is SessionKind.LONG
+    ]
+    assert longs and all("goal marathon effort" in s.description for s in longs)

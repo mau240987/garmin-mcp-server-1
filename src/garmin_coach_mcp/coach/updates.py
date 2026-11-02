@@ -18,6 +18,7 @@ from garmin_coach_mcp.coach.engine import (
     _distance_class,
     _r,
     build_plan,
+    fartlek_session,
 )
 from garmin_coach_mcp.coach.models import (
     AthleteBaseline,
@@ -168,6 +169,11 @@ def apply_changes(
                     if s.est_duration_min and s.distance_km:
                         s.est_duration_min = round(s.est_duration_min * new_km / s.distance_km)
                     s.distance_km = new_km
+                    if s.long_variant is not None:  # a lighter week: plain easy long run
+                        s.long_variant = s.fast_km = s.fast_blocks = None
+                        s.zone, s.description = "Z2", "Long run, easy and conversational."
+                    elif s.kind is SessionKind.FARTLEK:  # pattern follows the new distance
+                        _k, s.zone, s.description = fartlek_session(new_km, new.easy_pace)
                     _retire(new, s)
                     scaled += 1
             _refresh(week)
@@ -234,7 +240,7 @@ def apply_changes(
             _editable(s, today)
             _retire(new, s)
             # A long run keeps its distance and loses only its faster part (R12).
-            long_run = s.kind is SessionKind.LONG
+            long_run = s.kind is SessionKind.LONG and s.long_variant is not None
             week.sessions[i] = PlannedSession(
                 date=s.date,
                 kind=SessionKind.LONG if long_run else SessionKind.EASY,

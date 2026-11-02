@@ -193,8 +193,9 @@ def _quality_count(phase: Phase, level: Level, days: int, recovery: bool) -> int
     return 1
 
 
-def _fartlek(km: float) -> tuple[SessionKind, str, str]:
-    reps, on_s, off_s = fartlek_pattern(km)
+def fartlek_session(km: float, easy_pace: float | None) -> tuple[SessionKind, str, str]:
+    """(kind, zone, description) of a fartlek; also used when a plan update rescales one."""
+    reps, on_s, off_s = fartlek_pattern(km, easy_pace)
     on = f"{on_s // 60} min" if on_s >= 60 else f"{on_s} s"
     return (
         SessionKind.FARTLEK,
@@ -212,12 +213,13 @@ def _quality_session(
     *,
     km: float = 0.0,
     fartlek: bool = False,
+    easy_pace: float | None = None,
 ) -> tuple[SessionKind, str, str]:
     """(kind, zone, description) for a quality session."""
     rp = goal.race_pace_s_per_km
     rp_txt = f" at goal race pace ~{format_pace(rp)}" if rp else " at goal race effort"
     if fartlek and slot == 0 and phase in (Phase.BASE, Phase.BUILD):
-        return _fartlek(km)
+        return fartlek_session(km, easy_pace)
     if phase is Phase.BASE:
         return SessionKind.STRIDES, "Z2", "Easy run with 6x20 s relaxed strides at the end."
     if phase is Phase.TAPER:
@@ -404,7 +406,11 @@ def _layout_week(
                 if long_variant and long_km >= VARIETY_MIN_LONG_KM
                 else None
             )
-            if variant is None and variety and dclass != "ultra":
+            if (
+                variant is None
+                and variety
+                and _long_variant(phase, dclass, goal, max(long_km, VARIETY_MIN_LONG_KM))
+            ):
                 desc = "Long run, easy and conversational."  # R12: the easy week of the pair
             long_s = _session(date, SessionKind.LONG, long_km, "Z2", desc, easy_pace)
             if variant is not None:
@@ -414,7 +420,14 @@ def _layout_week(
         elif d in q_days:
             slot = q_days.index(d)
             kind, zone, desc = _quality_session(
-                phase, dclass, goal, level, slot, km=q_km[slot], fartlek=fartlek
+                phase,
+                dclass,
+                goal,
+                level,
+                slot,
+                km=q_km[slot],
+                fartlek=fartlek,
+                easy_pace=easy_pace,
             )
             sessions.append(_session(date, kind, q_km[slot], zone, desc, None))
         elif d == medium_long_day:
