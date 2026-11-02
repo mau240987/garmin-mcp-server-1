@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "garmin-coach": {
+      "command": "bash",
+      "args": [
+        "${CLAUDE_PROJECT_DIR:-.}/scripts/coach-mcp.sh"
+      ],
+      "env": {
+        "GARMIN_PERSONAL_API_KEY": "${GARMIN_PERSONAL_API_KEY:-}",
+        "GARMIN_PERSONAL_API_KEY_EXPIRES": "${GARMIN_PERSONAL_API_KEY_EXPIRES:-}",
+        "GARMIN_ALLOW_UNOFFICIAL_READS": "${GARMIN_ALLOW_UNOFFICIAL_READS:-}",
+        "GARMIN_ALLOW_UNOFFICIAL_WRITES": "${GARMIN_ALLOW_UNOFFICIAL_WRITES:-}",
+        "GARMIN_TOKEN_DIR": "${GARMIN_TOKEN_DIR:-}",
+        "GARMIN_COACH_DATA_DIR": "${GARMIN_COACH_DATA_DIR:-}"
+      }
+    }
+  }
+}

@@ -25,3 +25,7 @@ Thumbs.db
 dist/
 build/
 *.egg-info/
+
+# Race Coach data of cloud sessions (goals, plans, exports: personal data)
+.coach-data/
+.venv.setup.lock/

@@ -92,6 +92,21 @@ def files() -> dict[Path, str]:
             indent=2,
         ),
         plugin_dir / "skills" / SKILL / "SKILL.md": skill_md(),
+        # Project-level server for Claude Code sessions opened on this repository (also the
+        # cloud sessions usable from the Claude mobile app): runs from ./.venv, installed
+        # on first use by scripts/setup-venv.sh.
+        ROOT / ".mcp.json": json.dumps(
+            {
+                "mcpServers": {
+                    "garmin-coach": {
+                        "command": "bash",
+                        "args": ["${CLAUDE_PROJECT_DIR:-.}/scripts/coach-mcp.sh"],
+                        "env": mcp_env,
+                    }
+                }
+            },
+            indent=2,
+        ),
         ROOT / ".claude-plugin" / "marketplace.json": json.dumps(
             {
                 "name": "garmin-coach",
