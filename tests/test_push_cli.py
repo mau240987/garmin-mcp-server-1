@@ -109,3 +109,11 @@ def test_writes_are_enabled_only_with_apply(env: tuple[Path, Writer]) -> None:
         mp.setattr(push_cli.Settings, "from_env", staticmethod(spy))
         push_cli.main(["--data-dir", str(data)])
     assert seen == [False]
+
+
+def test_push_complete() -> None:
+    ok = {"to_delete": 1, "deleted": [5], "created": [{"ok": True}], "uncertain": []}
+    assert push_cli.push_complete(ok)
+    assert not push_cli.push_complete({**ok, "deleted": []})
+    assert not push_cli.push_complete({**ok, "created": [{"ok": False}]})
+    assert not push_cli.push_complete({**ok, "uncertain": ["2026-11-20"]})

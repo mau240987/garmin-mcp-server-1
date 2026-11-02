@@ -171,3 +171,21 @@ def test_push_workflow_template_is_safe() -> None:
         assert "${{" not in step.get("run", ""), step.get("name")
     gitignore = (ROOT / "templates" / "garmin-coach-data" / ".gitignore").read_text()
     assert "garmin_tokens.json" in gitignore
+
+
+def test_weekly_workflow_template_is_safe() -> None:
+    """Weekly coach: scheduled + manual, inputs only through env, Garmin writes only when the
+    repository variable GARMIN_AUTO_PUSH is "true"."""
+    import yaml
+
+    path = ROOT / "templates" / "garmin-coach-data" / ".github" / "workflows" / "weekly-coach.yml"
+    text = path.read_text(encoding="utf-8")
+    wf = yaml.safe_load(text)
+    triggers = wf[True] if True in wf else wf["on"]
+    assert set(triggers) == {"schedule", "workflow_dispatch"}
+    steps = wf["jobs"]["weekly"]["steps"]
+    for step in steps:
+        assert "${{" not in step.get("run", ""), step.get("name")
+    checkin = next(s for s in steps if s.get("name") == "Weekly check-in")
+    assert checkin["env"]["AUTO_PUSH"] == "${{ vars.GARMIN_AUTO_PUSH }}"
+    assert '[ "$AUTO_PUSH" = "true" ]' in checkin["run"]

@@ -174,7 +174,11 @@ def review_week(
         fatigue = bool(recovery and len(recovery.signals) >= 2)
         if fatigue:
             review.suggested_changes.append(ScaleWeek(week=nxt.index, factor=0.8))
-            review.suggested_changes.extend(MakeEasy(date=s.date) for s in quality)
+            # scale_week already turns variant long runs into easy long runs; make_easy on a
+            # long run would also shorten it to an easy-run length.
+            review.suggested_changes.extend(
+                MakeEasy(date=s.date) for s in quality if s.kind is not SessionKind.LONG
+            )
             review.suggestions.append(
                 "Several recovery signals are off: reduce next week by 20% and make it all easy. "
                 "If you feel ill or have pain, rest and consider seeing a doctor."

@@ -24,14 +24,39 @@ from garmin_coach_mcp.cli import build_router
 from garmin_coach_mcp.coach.storage import CoachStore
 from garmin_coach_mcp.coach.tools import WRITES_UNAVAILABLE_NOTE
 from garmin_coach_mcp.config import Settings
-from garmin_coach_mcp.errors import ConfigurationError, GarminMCPError
+from garmin_coach_mcp.errors import ConfigurationError, GarminMCPError, NotFoundError
 from garmin_coach_mcp.server import build_server
+
+
+def active_plan_id(store: CoachStore, today: dt.date) -> str:
+    """Current plan of the next race: the goal with the earliest race date not in the past
+    (the most recently saved one when a goal was re-set for the same date), its latest plan
+    that was not replaced. A finished tune-up race never hides the main goal."""
+    goals = [g for g in store.list_goals() if g.race_date >= today]
+    newest_first = sorted(goals, key=lambda g: g.created_at, reverse=True)
+    upcoming = sorted(newest_first, key=lambda g: g.race_date)  # stable: newest first per date
+    for goal in upcoming:
+        plans = [p for p in store.list_plans(goal.id) if not p.superseded_by]
+        if plans:
+            return plans[-1].id
+    raise NotFoundError(
+        "No plan for an upcoming race.",
+        remediation="Generate a plan with the assistant (generate_training_plan).",
+    )
+
+
+def push_complete(data: dict[str, Any]) -> bool:
+    """A real push sent everything: no failed create/schedule, no obsolete workout left,
+    no uncertain session."""
+    failed = [r for r in data.get("created", []) if isinstance(r, dict) and not r.get("ok", True)]
+    left = int(data.get("to_delete", 0)) - len(data.get("deleted", []))
+    return not failed and left <= 0 and not data.get("uncertain")
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="garmin-coach-push", description=__doc__.splitlines()[0])
     p.add_argument("--data-dir", type=Path, required=True, help="Coach data (goals/, plans/).")
-    p.add_argument("--plan-id", help="Plan to send (default: latest plan of the latest goal).")
+    p.add_argument("--plan-id", help="Plan to send (default: the active plan, next race first).")
     p.add_argument("--from-date", type=dt.date.fromisoformat, help="First day (default today).")
     p.add_argument("--weeks", type=int, default=2, choices=range(1, 5), metavar="1-4")
     p.add_argument("--apply", action="store_true", help="Really send (default: dry run).")
@@ -42,7 +67,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def _dry_run_text(text: str, apply: bool) -> str:
+def dry_run_text(text: str, apply: bool) -> str:
     """The tool's text; in a dry run, without the "writes not available" note, which here only
     reflects that writes are enabled solely by --apply."""
     if apply:
@@ -67,7 +92,8 @@ async def run(args: argparse.Namespace) -> int:
         coach_data_dir=args.data_dir.absolute(),
     )
     router = build_router(settings)
-    app = build_server(router, store=CoachStore(settings.coach_data_dir))
+    store = CoachStore(settings.coach_data_dir)
+    app = build_server(router, store=store)
     mode = "PUSH" if args.apply else "DRY RUN"
     lines = [f"## Garmin push — {mode}", ""]
 
@@ -87,9 +113,12 @@ async def run(args: argparse.Namespace) -> int:
             _report(lines, args.summary)
             return 2
 
-    params: dict[str, Any] = {"weeks": args.weeks, "dry_run": not args.apply}
-    if args.plan_id:
-        params["plan_id"] = args.plan_id
+    try:
+        plan_id = args.plan_id or active_plan_id(store, dt.date.today())
+    except NotFoundError as exc:
+        _report([*lines, f"**Error:** {exc}"], args.summary)
+        return 1
+    params: dict[str, Any] = {"plan_id": plan_id, "weeks": args.weeks, "dry_run": not args.apply}
     if args.from_date:
         params["from_date"] = args.from_date.isoformat()
     if args.retry_uncertain:
@@ -111,7 +140,7 @@ async def run(args: argparse.Namespace) -> int:
         f"- To create: {data.get('to_create')} · to schedule: {data.get('to_schedule')} · "
         f"obsolete to delete: {data.get('to_delete')}",
         "",
-        _dry_run_text(str(data.get("text", "")), args.apply),
+        dry_run_text(str(data.get("text", "")), args.apply),
     ]
     if not args.apply:
         send = int(data.get("to_create", 0)) + int(data.get("to_schedule", 0))
@@ -122,8 +151,7 @@ async def run(args: argparse.Namespace) -> int:
             f"**{data.get('to_delete', 0)}** (same plan, from_date and weeks).",
         ]
     _report(lines, args.summary)
-    failed = [r for r in data.get("created", []) if isinstance(r, dict) and not r.get("ok", True)]
-    return 1 if failed else 0
+    return 0 if not args.apply or push_complete(data) else 1
 
 
 def main(argv: Sequence[str] | None = None) -> int:

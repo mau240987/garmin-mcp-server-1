@@ -50,3 +50,33 @@ token Garmin.
 - Le credenziali stanno nei secret di GitHub, cifrati e non visibili nei log. I token di
   sessione vivono solo nella cartella temporanea del job.
 - Il repo contiene dati di allenamento e derivati da dati di salute: **deve restare privato**.
+
+## Check-in settimanale automatico
+
+Il workflow **Weekly coach** (`weekly-coach.yml`) parte ogni lunedì mattina (04:17 UTC) e si può
+avviare anche a mano. Usa `garmin-coach-weekly`, che passa dagli strumenti MCP con le stesse
+regole di sicurezza:
+
+1. **Revisione** della settimana appena chiusa con `review_week`: sessioni fatte o saltate, lenti
+   troppo intensi, segnali di recupero (FC a riposo, HRV, sonno).
+2. **Adattamento** con le modifiche proposte dal motore (`suggested_changes`), applicate con
+   `apply_plan_update` sulla revisione corrente del piano:
+   - con almeno 2 segnali di recupero: settimana successiva −20% e sedute dure facili;
+   - dopo una settimana completata sotto il 60%: settimana successiva ridotta.
+   Mai più volume. Con l'input `no_adapt` fa solo la revisione.
+3. **Livello di prestazione**: se il VDOT attuale si discosta di almeno 1 da quello del piano,
+   il riepilogo propone di rigenerare i ritmi con l'assistente.
+4. **Settimana su Garmin**: prova a vuoto dell'invio della settimana in corso. Se la variabile
+   del repository `GARMIN_AUTO_PUSH` vale `true`, invia esattamente ciò che la prova ha elencato.
+   Impostarla è un'**autorizzazione permanente** agli invii settimanali; senza, il riepilogo
+   indica i valori per *Push to Garmin*.
+
+Il piano aggiornato e gli id dei workout vengono salvati nel repository. Ogni esecuzione apre
+una issue con il riepilogo, notificata da GitHub anche sull'app.
+
+Il piano usato è quello **attivo**: la gara futura più vicina, ultimo piano non sostituito. Una
+gara di preparazione già corsa non nasconde quindi l'obiettivo principale. Vale anche per
+*Push to Garmin* quando `plan_id` è vuoto.
+
+Secret facoltativo `GARMIN_PERSONAL_API_KEY`: con la chiave, le letture passano dall'API ufficiale
+(salute e recupero inclusi). Senza, usano lo stesso login dell'invio.
