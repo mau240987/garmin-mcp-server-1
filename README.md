@@ -20,6 +20,21 @@ Built on the battle-tested [garminconnect](https://github.com/cyberjunky/python-
 | `delete_workout` | Write | Delete a specific workout |
 | `delete_plan_workouts` | Write | Bulk-delete workouts by name pattern |
 
+### Race Coach tools
+
+| Tool | What it does |
+|---|---|
+| `set_race_goal` | Save the race goal: type/distance, date, optional target time, days per week, long-run day, constraints, unavailable dates. |
+| `get_athlete_profile` | Deterministic profile from Garmin: weekly volume, longest run, HR-zone distribution (flags easy runs run too hard), easy pace, recovery signals (resting HR, HRV, sleep). |
+| `generate_training_plan` | Phased plan (base/build/specific/taper) from the deterministic engine, rules in [`docs/plan-engine.md`](docs/plan-engine.md). Saved locally. |
+| `review_week` | Planned vs done for a week, alerts, and suggested changes. |
+| `apply_plan_update` | Bounded edits with revision history: scale a week down, skip/move/ease a session, regenerate from a date. |
+| `export_plan` | `md`, `ics` (calendar) or `fit` (zip of Garmin FIT workout files). Works without Garmin write access. |
+| `push_plan_to_garmin` | Send the next 1-4 weeks as structured workouts (dry run by default, confirmed count; needs `GARMIN_ALLOW_UNOFFICIAL_WRITES=true`). |
+
+Goals, plans and exports live in `GARMIN_COACH_DATA_DIR` (default `~/.garmin-coach-mcp/data`),
+never in the repository. Plans and profiles carry the Garmin attribution for derived data.
+
 ### Behaviour
 
 - **Structured output**: every tool has a typed input schema and returns structured content

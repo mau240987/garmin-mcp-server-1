@@ -184,6 +184,9 @@ class PlannedSession(_Model):
     description: str
     pace_hint: str | None = None
     est_duration_min: int | None = None
+    garmin_workout_id: int | None = Field(
+        default=None, description="Set once the session was pushed to Garmin Connect."
+    )
 
 
 class PlanWeek(_Model):
@@ -194,6 +197,12 @@ class PlanWeek(_Model):
     target_km: float = Field(ge=0, description="Planned running volume of the week.")
     long_run_km: float = Field(ge=0)
     sessions: list[PlannedSession]
+
+
+class PlanRevision(_Model):
+    revision: int
+    at: dt.datetime
+    summary: str
 
 
 class TrainingPlan(_Model):
@@ -211,3 +220,19 @@ class TrainingPlan(_Model):
     notes: list[str] = Field(default_factory=list)
     attribution: str | None = None
     engine_version: str
+    revision: int = 1
+    history: list[PlanRevision] = Field(default_factory=list)
+    stale_garmin_workout_ids: list[int] = Field(
+        default_factory=list,
+        description="Garmin workouts made obsolete by plan updates; removed on the next push.",
+    )
+
+    @property
+    def easy_pace(self) -> float | None:
+        return self.baseline.easy_pace_s_per_km
+
+    def week_of(self, day: dt.date) -> PlanWeek | None:
+        return next(
+            (w for w in self.weeks if w.start_date <= day < w.start_date + dt.timedelta(days=7)),
+            None,
+        )

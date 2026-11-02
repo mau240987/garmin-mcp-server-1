@@ -14,7 +14,8 @@ notes predate MCP SDK 2.3 (snake_case `ToolAnnotations`, `mcp.server.mcpserver`)
 | A4 | `OfficialStarterBackend` stub + requirements | **Done (stub)** | Declares no capabilities; router prefers it for writes once it does (tested). Requirements: `docs/starter-requirements.md`. |
 | C1 | Goal/plan model + local storage | **Done** | `coach/models.py`, `coach/storage.py` (JSON, atomic, 0600, `GARMIN_COACH_DATA_DIR`). |
 | C2 | Deterministic plan engine | **Done** (v1.1 after review) | `coach/engine.py`, rules R1-R11 in `docs/plan-engine.md`; 5 brief cases, ~7,200-case invariant matrix, one regression test per review finding. |
-| C3–C4 | New MCP tools, export | Not started | |
+| C3 | Race Coach MCP tools | **Done** | 6 brief tools + `push_plan_to_garmin` (`coach/tools.py`, `profile.py`, `review.py`, `updates.py`, `sessions.py`). |
+| C4 | Export md / ics / fit | **Done** | `coach/export.py`; FIT via `fit-tool` (BSD-3); FIT files decoded back in tests. Not yet imported on a real device. |
 | S1–S2 | Claude skill/plugin, ChatGPT/Gemini instructions | Not started | |
 | V | Independent review + E2E | Partial | Review of H done by a separate agent; all findings fixed (see below). E2E pending later pieces. |
 
@@ -43,8 +44,8 @@ the legacy server did not start on a clean install (MCP SDK 2.x removed `mcp.ser
   `activities/search` beyond 100 results, `hrv/{date}` 204 on empty days, FIT download, rate limits.
 - R3 closed: attribution follows the API Brand Guidelines PDF ("Garmin", shown under the heading).
 
-- V-1/V-2 (workout units and pace target) — write test authorized; run
-  `scripts/verify_workout_write.py` locally (sandbox cannot reach Garmin) and share the report.
+- V-1/V-2 closed on 2026-11-02 (owner's real write test): seconds, meters, `pace.zone` m/s and
+  secondary HR target stored exactly as sent; test workout deleted.
 - CI on Python 3.12 has not been run locally (only 3.13 available in the dev sandbox).
 
 ## Independent review of H — findings and fixes

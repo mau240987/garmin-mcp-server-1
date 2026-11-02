@@ -12,6 +12,7 @@ from garmin_coach_mcp.backends import BackendRouter, Capability, GarminBackend
 from garmin_coach_mcp.backends.official_personal import OfficialPersonalBackend
 from garmin_coach_mcp.backends.unofficial import UnofficialBackend
 from garmin_coach_mcp.client import GarminSession
+from garmin_coach_mcp.coach.storage import CoachStore
 from garmin_coach_mcp.config import LOG_LEVELS, Settings
 from garmin_coach_mcp.errors import GarminMCPError
 from garmin_coach_mcp.logging_utils import configure_logging
@@ -128,7 +129,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _interactive_login(settings)
 
     router = build_router(settings)
-    app = build_server(router, read_only=settings.read_only)
+    app = build_server(
+        router, read_only=settings.read_only, store=CoachStore(settings.coach_data_dir)
+    )
     log.info(
         "garmin-coach-mcp %s starting (transport=%s, read_only=%s, backends=%s)",
         __version__,

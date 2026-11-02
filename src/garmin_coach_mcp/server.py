@@ -13,6 +13,8 @@ from pydantic import BeforeValidator, Field
 
 from garmin_coach_mcp import __version__
 from garmin_coach_mcp.backends import BackendRouter, Capability, GarminBackend
+from garmin_coach_mcp.coach.storage import CoachStore
+from garmin_coach_mcp.coach.tools import register_coach_tools
 from garmin_coach_mcp.errors import GarminMCPError, InvalidRequestError, UpstreamServiceError
 from garmin_coach_mcp.formatting import format_duration, format_pace, pace_from
 from garmin_coach_mcp.logging_utils import get_logger
@@ -42,10 +44,12 @@ T = TypeVar("T")
 log = get_logger("server")
 
 INSTRUCTIONS = (
-    "Garmin Connect tools for a running coach. Read tools return the athlete's activities, "
-    "daily health metrics and recent training volume. Write tools create, schedule and delete "
-    "structured running workouts on the athlete's Garmin calendar: always show the athlete "
-    "what will be created or deleted and get explicit confirmation before calling them."
+    "Garmin Connect tools for a running coach (Race Coach). Workflow: set_race_goal -> "
+    "get_athlete_profile -> generate_training_plan -> export_plan or push_plan_to_garmin -> "
+    "review_week -> apply_plan_update. Plans come from a deterministic engine: never invent "
+    "volumes or paces. No medical advice: with persistent pain suggest a professional. Always "
+    "show the athlete what will be created, changed or deleted and get explicit confirmation "
+    "before calling write tools."
 )
 
 READ = ToolAnnotations(
@@ -145,6 +149,9 @@ def build_server(
     *,
     read_only: bool = False,
     sleep: Callable[[float], None] = time.sleep,
+    store: CoachStore | None = None,
+    today: Callable[[], dt.date] = dt.date.today,
+    now: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.UTC),
 ) -> MCPServer:
     """Construct the server and register tools; write tools are omitted when read_only."""
     app: MCPServer = MCPServer(
@@ -424,6 +431,11 @@ def build_server(
             else "No workouts found on Garmin Connect."
         )
         return WorkoutList(count=len(items), workouts=items, text=text, sources=sources(backend))
+
+    if store is not None:
+        register_coach_tools(
+            app, router, store, read_only=read_only, today=today, now=now, sleep=sleep
+        )
 
     if read_only:
         return app

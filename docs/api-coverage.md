@@ -159,7 +159,10 @@ mentre non lo sarebbe se lo si volesse estendere allo stato nativo Garmin; `get_
 - `garminconnect` 0.3.20 (risolto da `>=0.3.0`): `TargetType.SPEED`/`HEART_RATE` rinominati
   (`push_workout` legacy sarebbe andato in errore), token in formato garth non più supportati
   (serve un nuovo login una tantum), retry interni anche sulle POST (disattivati, vedi H).
-- **V-1 — Unità degli step (da verificare su dispositivo reale).** Il codice legacy inviava
+- **V-1/V-2 VERIFICATI [REALE] il 2026-11-02** con `scripts/verify_workout_write.py`: Garmin
+  memorizza durate in **secondi**, distanze in **metri**, target `pace.zone` in m/s (6:00-5:30/km
+  riletti identici) e target FC secondario; il codice legacy (ms/cm, `speed.zone`) era errato.
+- **V-1 — Unità degli step (storico).** Il codice legacy inviava
   durate in millisecondi (×1000) e distanze in centimetri (×100). Gli helper ufficiali della
   libreria usano **secondi** e **metri**, e il nuovo codice segue la libreria. Prima di
   qualunque uso in produzione: creare un workout di prova (10 min + 1 km), verificarlo su
