@@ -1,36 +1,60 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
   "name": "io.github.mau240987/garmin-mcp-server",
-  "description": "MCP Server for Garmin Connect — read activities, health data, and push structured training plans from any AI assistant.",
-  "version": "0.2.0",
+  "description": "Garmin Connect MCP server and race coach: official Personal API reads, deterministic training plans, FIT/ICS export, optional workout sync.",
+  "version": "2.0.0-dev0",
   "repository": {
-    "url": "https://github.com/mau240987/garmin-mcp-server",
+    "url": "https://github.com/mrosano1987/garmin-mcp-server-1",
     "source": "github"
   },
   "packages": [
     {
       "registry_type": "pypi",
-      "identifier": "garmin-mcp-server",
-      "version": "0.2.0",
+      "identifier": "garmin-coach-mcp-server",
+      "version": "2.0.0.dev0",
       "transport": {
         "type": "stdio"
       },
       "environment_variables": [
         {
+          "name": "GARMIN_PERSONAL_API_KEY",
+          "description": "Official Garmin Connect Personal API key (reads)",
+          "is_required": false,
+          "is_secret": true
+        },
+        {
+          "name": "GARMIN_PERSONAL_API_KEY_EXPIRES",
+          "description": "Expiry date of the Personal API key (YYYY-MM-DD), for advance warnings",
+          "is_required": false,
+          "is_secret": false
+        },
+        {
           "name": "GARMIN_EMAIL",
-          "description": "Garmin Connect account email (required on first login only; tokens are cached afterwards)",
+          "description": "Garmin Connect email, only for the unofficial login (first run; tokens are cached)",
           "is_required": false,
           "is_secret": false
         },
         {
           "name": "GARMIN_PASSWORD",
-          "description": "Garmin Connect account password (required on first login only)",
+          "description": "Garmin Connect password, only for the unofficial login (first run)",
           "is_required": false,
           "is_secret": true
         },
         {
-          "name": "GARTH_TOKEN_DIR",
-          "description": "Directory where garth OAuth tokens are persisted (default: ~/.garth)",
+          "name": "GARMIN_ALLOW_UNOFFICIAL_WRITES",
+          "description": "Enable workout create/schedule/delete via the unofficial backend (default false)",
+          "is_required": false,
+          "is_secret": false
+        },
+        {
+          "name": "GARMIN_TOKEN_DIR",
+          "description": "Token directory (default ~/.garmin-coach-mcp/tokens)",
+          "is_required": false,
+          "is_secret": false
+        },
+        {
+          "name": "GARMIN_COACH_DATA_DIR",
+          "description": "Where goals, plans and exports are stored (default ~/.garmin-coach-mcp/data)",
           "is_required": false,
           "is_secret": false
         }

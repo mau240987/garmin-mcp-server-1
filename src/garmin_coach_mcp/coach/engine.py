@@ -479,7 +479,8 @@ def build_plan(
         )
     if level is Level.BEGINNER and dclass in ("marathon", "ultra"):
         warnings.append(
-            f"A {dclass} is very demanding for the current training level: aim to finish, keep "
+            f"{'An' if dclass == 'ultra' else 'A'} {dclass} is very demanding for the current "
+            "training level: aim to finish, keep "
             "every run easy unless stated, and reconsider the race if long runs feel too hard."
         )
     if (
