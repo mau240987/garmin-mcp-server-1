@@ -2,10 +2,9 @@
 
 <!-- mcp-name: io.github.mau240987/garmin-mcp-server -->
 
-![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
+![Python](https://img.shields.io/badge/python-3.12+-blue.svg)
 ![License: AGPL 3.0](https://img.shields.io/badge/License-AGPL3.0-green.svg)
 ![MCP](https://img.shields.io/badge/MCP-compatible-8A2BE2.svg)
-![PyPI](https://img.shields.io/pypi/v/garmin-mcp-server.svg)
 
 MCP Server for Garmin Connect — read activities, health metrics, and push structured training plans from any AI assistant that supports the [Model Context Protocol](https://modelcontextprotocol.io).
 
@@ -84,24 +83,18 @@ never in the repository. Plans and profiles carry the Garmin attribution for der
 - A Garmin Connect account
 - A Garmin device (for workout sync)
 
-### Install via pip
+### Install
+
+> **Not on PyPI yet.** The PyPI package named `garmin-mcp-server` is a **different, unrelated
+> project** by another author: do not install it for this server (and never give it your Garmin
+> credentials by mistake). This project will be published as `garmin-coach-mcp-server`; until
+> then, install from the repository:
 
 ```bash
-pip install garmin-mcp-server
-```
-
-This installs the `garmin-mcp-server` command. You can also run it without
-installing using [uvx](https://docs.astral.sh/uv/):
-
-```bash
-uvx garmin-mcp-server
-```
-
-### Or from source
-
-```bash
-git clone https://github.com/mau240987/garmin-mcp-server.git
-cd garmin-mcp-server
+pip install "git+https://github.com/mrosano1987/garmin-mcp-server-1.git"
+# or from a clone:
+git clone https://github.com/mrosano1987/garmin-mcp-server-1.git
+cd garmin-mcp-server-1
 python3 -m venv .venv && .venv/bin/pip install .
 # installs the `garmin-coach-mcp` command (python -m garmin_coach_mcp also works)
 ```
@@ -156,23 +149,23 @@ Edit `claude_desktop_config.json`:
 - **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 
-**If installed via pip** (cleanest):
+**Recommended:** official Personal API key for reads (see below); point `command` to the
+installed `garmin-coach-mcp`:
 
 ```json
 {
   "mcpServers": {
     "garmin": {
-      "command": "garmin-mcp-server",
+      "command": "/full/path/to/.venv/bin/garmin-coach-mcp",
       "env": {
-        "GARMIN_EMAIL": "your@email.com",
-        "GARMIN_PASSWORD": "yourpassword"
+        "GARMIN_PERSONAL_API_KEY": "your-personal-api-key"
       }
     }
   }
 }
 ```
 
-**If running from source**, point to the script directly:
+**Unofficial login** (needed only for workout writes or without a Personal API key):
 
 ```json
 {
@@ -411,6 +404,12 @@ garmin-coach-mcp --login     # prompts for email, password and MFA code; stores 
 and restart Claude Desktop after editing the config.
 
 ---
+
+## Practical tests
+
+A read-only end-to-end check on your own Garmin data (profile → plan → md/ics/fit exports,
+Garmin writes forced off) and a checklist for real clients and devices:
+[`scripts/try_race_coach.py`](scripts/try_race_coach.py), [`docs/practical-tests.md`](docs/practical-tests.md).
 
 ## Garmin API coverage
 

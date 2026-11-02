@@ -138,3 +138,20 @@ def test_claude_ai_zip(tmp_path: Path) -> None:
     assert names == ["race-coach/SKILL.md"]
     fm = frontmatter(zipfile.ZipFile(path).read("race-coach/SKILL.md").decode())
     assert set(fm) <= UPLOAD_KEYS
+
+
+def test_registry_manifest_matches_the_package() -> None:
+    """server.json must describe THIS package (a different 'garmin-mcp-server' exists on PyPI)."""
+    pyproject = (ROOT / "pyproject.toml").read_text()
+    name = re.search(r'^name = "([^"]+)"', pyproject, re.M)
+    version = re.search(r'^version = "([^"]+)"', pyproject, re.M)
+    assert name and version
+    manifest = json.loads((ROOT / "server.json").read_text())
+    pkg = manifest["packages"][0]
+    assert pkg["registry_type"] == "pypi"
+    assert pkg["identifier"] == name.group(1) and pkg["version"] == version.group(1)
+    config = (ROOT / "src" / "garmin_coach_mcp" / "config.py").read_text()
+    for env in pkg["environment_variables"]:
+        assert f'"{env["name"]}"' in config, f"{env['name']} is not read by the server"
+    readme = (ROOT / "README.md").read_text()
+    assert "pip install garmin-mcp-server" not in readme and "uvx garmin-mcp-server" not in readme
