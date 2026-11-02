@@ -21,3 +21,7 @@ Thumbs.db
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+# Python build artifacts
+dist/
+build/
+*.egg-info/

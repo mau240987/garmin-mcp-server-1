@@ -1,0 +1,40 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "io.github.mau240987/garmin-mcp-server",
+  "description": "MCP Server for Garmin Connect — read activities, health data, and push structured training plans from any AI assistant.",
+  "version": "0.2.0",
+  "repository": {
+    "url": "https://github.com/mau240987/garmin-mcp-server",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registry_type": "pypi",
+      "identifier": "garmin-mcp-server",
+      "version": "0.2.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environment_variables": [
+        {
+          "name": "GARMIN_EMAIL",
+          "description": "Garmin Connect account email (required on first login only; tokens are cached afterwards)",
+          "is_required": false,
+          "is_secret": false
+        },
+        {
+          "name": "GARMIN_PASSWORD",
+          "description": "Garmin Connect account password (required on first login only)",
+          "is_required": false,
+          "is_secret": true
+        },
+        {
+          "name": "GARTH_TOKEN_DIR",
+          "description": "Directory where garth OAuth tokens are persisted (default: ~/.garth)",
+          "is_required": false,
+          "is_secret": false
+        }
+      ]
+    }
+  ]
+}
