@@ -32,6 +32,20 @@ Built on the battle-tested [garminconnect](https://github.com/cyberjunky/python-
 | `export_plan` | `md`, `ics` (calendar) or `fit` (zip of Garmin FIT workout files). Works without Garmin write access. |
 | `push_plan_to_garmin` | Send the next 1-4 weeks as structured workouts (dry run by default, confirmed count; needs `GARMIN_ALLOW_UNOFFICIAL_WRITES=true`). |
 
+**Use it from Claude, Gemini or ChatGPT** — see [`docs/clients.md`](docs/clients.md):
+
+```bash
+# Claude Code: plugin with the MCP server and the race-coach skill
+claude plugin marketplace add mrosano1987/garmin-mcp-server-1
+claude plugin install garmin-race-coach@garmin-coach
+# Gemini CLI (from a clone of this repo)
+gemini extensions install ./extensions/gemini/garmin-race-coach
+```
+
+The coaching workflow and rules live in one file, [`coach/race-coach.md`](coach/race-coach.md);
+`scripts/build_coach_packages.py` generates the Claude skill, `GEMINI.md` and the ChatGPT
+instructions from it.
+
 Goals, plans and exports live in `GARMIN_COACH_DATA_DIR` (default `~/.garmin-coach-mcp/data`),
 never in the repository. Plans and profiles carry the Garmin attribution for derived data.
 

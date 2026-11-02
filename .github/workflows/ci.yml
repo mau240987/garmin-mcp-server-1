@@ -24,10 +24,12 @@ jobs:
         run: pip install -e ".[dev]"
       - name: Lint
         run: |
-          ruff check src tests garmin_mcp_server.py
-          ruff format --check src tests garmin_mcp_server.py
+          ruff check src tests scripts garmin_mcp_server.py
+          ruff format --check src tests scripts garmin_mcp_server.py
       - name: Type check
         run: mypy
+      - name: Client packages in sync with coach/race-coach.md
+        run: python scripts/build_coach_packages.py --check
       - name: Tests (no network, no real Garmin calls)
         run: pytest -q
 

@@ -1,0 +1,15 @@
+{
+  "name": "garmin-coach",
+  "owner": {
+    "name": "garmin-coach-mcp contributors"
+  },
+  "description": "Garmin Race Coach: MCP server and race-coach skill for running training plans on Garmin data.",
+  "plugins": [
+    {
+      "name": "garmin-race-coach",
+      "source": "./plugins/garmin-race-coach",
+      "description": "Race Coach on Garmin data (MCP server + skill).",
+      "version": "2.0.0-dev0"
+    }
+  ]
+}

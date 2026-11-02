@@ -16,7 +16,8 @@ notes predate MCP SDK 2.3 (snake_case `ToolAnnotations`, `mcp.server.mcpserver`)
 | C2 | Deterministic plan engine | **Done** (v1.1 after review) | `coach/engine.py`, rules R1-R11 in `docs/plan-engine.md`; 5 brief cases, ~7,200-case invariant matrix, one regression test per review finding. |
 | C3 | Race Coach MCP tools | **Done** | 6 brief tools + `push_plan_to_garmin` (`coach/tools.py`, `profile.py`, `review.py`, `updates.py`, `sessions.py`). |
 | C4 | Export md / ics / fit | **Done** | `coach/export.py`; FIT via `fit-tool` (BSD-3); FIT files decoded back in tests. Not yet imported on a real device. |
-| S1–S2 | Claude skill/plugin, ChatGPT/Gemini instructions | Not started | |
+| S1 | Claude skill + plugin | **Done — verified in Claude Code** | `plugins/garmin-race-coach` (MCP + skill), marketplace; `claude plugin validate` OK; real `claude -p` end-to-end run (goal → plan → ics) followed the skill. Claude Desktop/claude.ai zip not verified. |
+| S2 | ChatGPT / Gemini | **Done — not verified** | Generated from `coach/race-coach.md`: Gemini extension + `GEMINI.md`, ChatGPT system prompt; `docs/clients.md`. ChatGPT needs auth before remote use (`docs/roadmap-multiuser.md`). |
 | V | Independent review + E2E | Partial | Every piece (H, A1-A4, C1-C4) reviewed by a separate agent; all findings fixed (see below). E2E on real clients pending (S1-S2). |
 
 ## H — what was done
