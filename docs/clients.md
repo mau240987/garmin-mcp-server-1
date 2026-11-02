@@ -39,6 +39,22 @@ Il server riceve dalla shell le variabili `GARMIN_PERSONAL_API_KEY`,
 `GARMIN_ALLOW_UNOFFICIAL_WRITES`, `GARMIN_TOKEN_DIR`, `GARMIN_COACH_DATA_DIR` (vuote = default).
 La skill si attiva parlando di gara/piano/allenamenti, o con `/garmin-race-coach:race-coach`.
 
+## Claude Code nel cloud (anche da cellulare)
+
+Una sessione Claude Code su questo repository (claude.ai/code o app Claude) ha già skill e server:
+`.claude/skills/race-coach`, `.mcp.json` (server `garmin-coach`, avviato da
+`scripts/coach-mcp.sh`) e l'hook `.claude/hooks/session-start.sh`, che installa il pacchetto in
+`.venv` all'avvio. Una volta, nelle impostazioni dell'ambiente cloud (menu dell'ambiente → Edit):
+
+- **Network access**: aggiungere `personal.connectapi.garmin.com` agli *Allowed domains*.
+- **Variabili d'ambiente**: `GARMIN_PERSONAL_API_KEY` (e, se si vuole,
+  `GARMIN_PERSONAL_API_KEY_EXPIRES`). Mai in chat.
+
+Senza conferma girano solo gli strumenti di lettura e quelli locali; `apply_plan_update` e le
+scritture su Garmin chiedono sempre l'ok. Obiettivi, piani ed export finiscono in `.coach-data/`
+(ignorata da git, così l'app apre i file esportati) e **spariscono a fine sessione**: il container
+è temporaneo, il piano si rigenera dagli stessi dati.
+
 ## Claude Desktop / claude.ai
 
 1. Server: in `claude_desktop_config.json`

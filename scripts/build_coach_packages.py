@@ -92,6 +92,8 @@ def files() -> dict[Path, str]:
             indent=2,
         ),
         plugin_dir / "skills" / SKILL / "SKILL.md": skill_md(),
+        # Project skill for Claude Code sessions opened on this repository (cloud/mobile).
+        ROOT / ".claude" / "skills" / SKILL / "SKILL.md": skill_md(),
         # Project-level server for Claude Code sessions opened on this repository (also the
         # cloud sessions usable from the Claude mobile app): runs from ./.venv, installed
         # on first use by scripts/setup-venv.sh.

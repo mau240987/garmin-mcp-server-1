@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "enabledMcpjsonServers": ["garmin-coach"],
+  "permissions": {
+    "allow": [
+      "mcp__garmin-coach__get_activities",
+      "mcp__garmin-coach__get_activity_details",
+      "mcp__garmin-coach__get_health_summary",
+      "mcp__garmin-coach__get_training_status",
+      "mcp__garmin-coach__get_workouts",
+      "mcp__garmin-coach__get_athlete_profile",
+      "mcp__garmin-coach__set_race_goal",
+      "mcp__garmin-coach__generate_training_plan",
+      "mcp__garmin-coach__review_week",
+      "mcp__garmin-coach__export_plan"
+    ]
+  }
+}
