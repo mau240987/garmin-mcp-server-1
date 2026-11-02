@@ -26,10 +26,11 @@ import anyio
 from mcp.client import Client
 
 from garmin_coach_mcp.cli import build_router
+from garmin_coach_mcp.coach.models import TrainingPlan
 from garmin_coach_mcp.coach.storage import CoachStore
 from garmin_coach_mcp.config import Settings
 from garmin_coach_mcp.errors import NotFoundError
-from garmin_coach_mcp.push_cli import active_plan_id
+from garmin_coach_mcp.push_cli import active_plan_id, dry_run_text, push_complete
 from garmin_coach_mcp.server import build_server
 
 #: A VDOT change at least this large is worth regenerating the plan's paces.
@@ -73,9 +74,12 @@ async def run(args: argparse.Namespace) -> int:
     out.append(f"Plan `{plan_id}` (revision {plan.revision}).")
 
     async with Client(app) as client:
-        # 1-2. Review the week that ended and adapt the coming weeks.
-        last_week = today - dt.timedelta(days=7)
-        if plan.week_of(last_week) is not None:
+        # 1-2. Review the last complete week (Monday-Sunday) and adapt the coming weeks.
+        last_week = today - dt.timedelta(days=today.weekday() + 7)
+        reviewed = plan.week_of(last_week)
+        if reviewed is None:
+            out += ["", "No plan week last week: nothing to review."]
+        else:
             r = await client.call_tool(
                 "review_week", {"plan_id": plan_id, "week_start": last_week.isoformat()}
             )
@@ -85,8 +89,11 @@ async def run(args: argparse.Namespace) -> int:
             else:
                 review = (r.structured_content or {}).get("review", {})
                 out += ["", "### Last week", "", str((r.structured_content or {}).get("text"))]
-                changes = review.get("suggested_changes") or []
-                if changes and not args.no_adapt:
+                changes = _future_changes(review.get("suggested_changes") or [], today)
+                note = _skip_reason(plan, reviewed.index, review, args.no_adapt)
+                if changes and note:
+                    out += ["", f"Suggested changes **not applied**: {note}", f"`{changes}`"]
+                elif changes:
                     u = await client.call_tool(
                         "apply_plan_update",
                         {
@@ -101,12 +108,11 @@ async def run(args: argparse.Namespace) -> int:
                         status = 1
                     else:
                         out += [f"- {a}" for a in (u.structured_content or {}).get("applied", [])]
-                elif changes:
-                    out += ["", "Suggested changes (not applied, --no-adapt):", f"{changes}"]
+                        _mark_reviewed(store, plan_id, reviewed.index)
                 else:
                     out += ["", "No change to the plan: continue as written."]
-        else:
-            out += ["", "No plan week last week: nothing to review."]
+                    if not args.no_adapt:
+                        _mark_reviewed(store, plan_id, reviewed.index)
 
         # 3. Has the performance level moved?
         p = await client.call_tool("get_athlete_profile", {"weeks": 12})
@@ -132,7 +138,7 @@ async def run(args: argparse.Namespace) -> int:
         dry = d.structured_content or {}
         send = int(dry.get("to_create", 0)) + int(dry.get("to_schedule", 0))
         delete = int(dry.get("to_delete", 0))
-        out.append(str(dry.get("text", "")).strip())
+        out.append(dry_run_text(str(dry.get("text", "")), apply=False))
         if not args.auto_push:
             out += [
                 "",
@@ -151,12 +157,40 @@ async def run(args: argparse.Namespace) -> int:
             else:
                 data = res.structured_content or {}
                 out += ["", str(data.get("text", "")).strip()]
-                if any(not e.get("ok", True) for e in data.get("created", [])):
+                if not push_complete(data):
+                    out.append("**Not everything was sent or deleted: check Garmin Connect.**")
                     status = 1
         else:
             out += ["", "Nothing to send: Garmin is up to date."]
     _report(out, args.summary)
     return status
+
+
+def _future_changes(changes: list[dict[str, Any]], today: dt.date) -> list[dict[str, Any]]:
+    """Session changes dated before today cannot apply (and would refuse the whole update)."""
+    return [c for c in changes if "date" not in c or dt.date.fromisoformat(c["date"]) >= today]
+
+
+def _skip_reason(
+    plan: TrainingPlan, week: int, review: dict[str, Any], no_adapt: bool
+) -> str | None:
+    """Why unattended adaptation must not apply the suggestions (None = apply)."""
+    if no_adapt:
+        return "review only (--no-adapt)."
+    if week in plan.auto_reviewed_weeks:
+        return f"week {week} was already reviewed and adapted by an earlier run."
+    if not review.get("actual_km_to_date"):
+        # Nothing synced (or Garmin still processing Sunday's run): not evidence of a missed
+        # week. Cutting volume on that would be wrong; the athlete decides with the assistant.
+        return "no activity found in Garmin for that week (not synced yet?)."
+    return None
+
+
+def _mark_reviewed(store: CoachStore, plan_id: str, week: int) -> None:
+    plan = store.get_plan(plan_id)
+    if week not in plan.auto_reviewed_weeks:
+        plan.auto_reviewed_weeks.append(week)
+        store.save_plan(plan)
 
 
 def _report(lines: list[str], summary: Path | None) -> None:

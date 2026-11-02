@@ -253,6 +253,10 @@ class TrainingPlan(_Model):
     engine_version: str
     revision: int = 1
     history: list[PlanRevision] = Field(default_factory=list)
+    auto_reviewed_weeks: list[int] = Field(
+        default_factory=list,
+        description="Weeks already reviewed by garmin-coach-weekly: never adapted twice.",
+    )
     stale_garmin_workout_ids: list[int] = Field(
         default_factory=list,
         description="Garmin workouts made obsolete by plan updates; removed on the next push.",

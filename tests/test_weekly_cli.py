@@ -49,6 +49,7 @@ def test_reviews_adapts_and_prepares_without_writing(
     env: tuple[Path, FakeGarminReads, FakeGarminWriter], tmp_path: Path
 ) -> None:
     data, reads, writer = env
+    _week1_runs(reads)
     # Several recovery signals: the review proposes a lighter, easy next week.
     reads.summary = {"restingHeartRate": 58, "lastSevenDaysAvgRestingHeartRate": 49}
     reads.hrv_data = {"hrvSummary": {"status": "LOW"}}
@@ -130,3 +131,77 @@ def test_active_plan_prefers_the_next_race(tmp_path: Path) -> None:
     tune_up = call(app, "generate_training_plan", {"start_date": "2026-11-16"})
     assert push_cli.active_plan_id(store, dt.date(2026, 11, 20)) == tune_up["plan_id"]
     assert push_cli.active_plan_id(store, dt.date(2026, 12, 1)) == main["plan_id"]
+
+
+# Regressions from the independent review of the weekly coach.
+
+
+def _fatigue(reads: FakeGarminReads) -> None:
+    reads.summary = {"restingHeartRate": 58, "lastSevenDaysAvgRestingHeartRate": 49}
+    reads.hrv_data = {"hrvSummary": {"status": "LOW"}}
+    reads.sleep_s = 5 * 3600
+
+
+def _week1_runs(reads: FakeGarminReads) -> None:
+    """Some running in plan week 1 (16-22 Nov), so the week is not 'nothing synced'."""
+    from tests.test_coach_tools import run
+
+    reads.activities += [run(dt.date(2026, 11, 17), 6), run(dt.date(2026, 11, 22), 10)]
+
+
+def test_reruns_never_adapt_twice(
+    env: tuple[Path, FakeGarminReads, FakeGarminWriter], tmp_path: Path
+) -> None:
+    data, reads, writer = env
+    _fatigue(reads)
+    _week1_runs(reads)
+    args = ["--data-dir", str(data), "--today", MONDAY, "--auto-push"]
+    assert weekly_cli.main(args) == 0
+    first = CoachStore(data).list_plans()[-1]
+    created = len(writer.created)
+    summary = tmp_path / "again.md"
+    assert weekly_cli.main([*args, "--summary", str(summary)]) == 0
+    again = CoachStore(data).list_plans()[-1]
+    assert again.revision == first.revision
+    assert again.weeks[1].target_km == first.weeks[1].target_km
+    assert len(writer.created) == created and writer.deleted == []  # no churn on Garmin
+    assert "already reviewed" in summary.read_text()
+
+
+def test_no_synced_activity_is_not_a_missed_week(
+    env: tuple[Path, FakeGarminReads, FakeGarminWriter], tmp_path: Path
+) -> None:
+    data, _reads, _writer = env  # the fake history has nothing in plan week 1
+    before = CoachStore(data).list_plans()[-1]
+    summary = tmp_path / "w.md"
+    weekly_cli.main(["--data-dir", str(data), "--today", MONDAY, "--summary", str(summary)])
+    after = CoachStore(data).list_plans()[-1]
+    assert after.revision == before.revision and after.auto_reviewed_weeks == []
+    assert "not synced yet" in summary.read_text()
+
+
+def test_mid_week_run_reviews_the_last_complete_week(
+    env: tuple[Path, FakeGarminReads, FakeGarminWriter], tmp_path: Path
+) -> None:
+    data, reads, _writer = env
+    _fatigue(reads)
+    _week1_runs(reads)
+    summary = tmp_path / "w.md"
+    # Wednesday of week 2: reviews week 1, skips changes dated in the past, still applies.
+    rc = weekly_cli.main(
+        ["--data-dir", str(data), "--today", "2026-11-25", "--summary", str(summary)]
+    )
+    text = summary.read_text()
+    assert rc == 0, text
+    assert "Week 1 (2026-11-16" in text
+    plan = CoachStore(data).list_plans()[-1]
+    assert plan.auto_reviewed_weeks == [1] and plan.revision == 2
+
+
+def test_active_plan_follows_a_goal_reset_for_the_same_race(tmp_path: Path) -> None:
+    store = CoachStore(tmp_path / "coach")
+    app = make_app(FakeGarminReads(), store)
+    setup_plan(app)
+    call(app, "set_race_goal", {**MARATHON, "days_per_week": 5})
+    new = call(app, "generate_training_plan", {"start_date": "2026-11-16"})
+    assert push_cli.active_plan_id(store, dt.date(2026, 11, 20)) == new["plan_id"]

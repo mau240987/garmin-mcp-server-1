@@ -29,11 +29,12 @@ from garmin_coach_mcp.server import build_server
 
 
 def active_plan_id(store: CoachStore, today: dt.date) -> str:
-    """Current plan of the next race: the goal with the earliest race date not in the past,
-    its latest plan that was not replaced. A finished tune-up race never hides the main goal."""
-    upcoming = sorted(
-        (g for g in store.list_goals() if g.race_date >= today), key=lambda g: g.race_date
-    )
+    """Current plan of the next race: the goal with the earliest race date not in the past
+    (the most recently saved one when a goal was re-set for the same date), its latest plan
+    that was not replaced. A finished tune-up race never hides the main goal."""
+    goals = [g for g in store.list_goals() if g.race_date >= today]
+    newest_first = sorted(goals, key=lambda g: g.created_at, reverse=True)
+    upcoming = sorted(newest_first, key=lambda g: g.race_date)  # stable: newest first per date
     for goal in upcoming:
         plans = [p for p in store.list_plans(goal.id) if not p.superseded_by]
         if plans:
@@ -42,6 +43,14 @@ def active_plan_id(store: CoachStore, today: dt.date) -> str:
         "No plan for an upcoming race.",
         remediation="Generate a plan with the assistant (generate_training_plan).",
     )
+
+
+def push_complete(data: dict[str, Any]) -> bool:
+    """A real push sent everything: no failed create/schedule, no obsolete workout left,
+    no uncertain session."""
+    failed = [r for r in data.get("created", []) if isinstance(r, dict) and not r.get("ok", True)]
+    left = int(data.get("to_delete", 0)) - len(data.get("deleted", []))
+    return not failed and left <= 0 and not data.get("uncertain")
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -58,7 +67,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def _dry_run_text(text: str, apply: bool) -> str:
+def dry_run_text(text: str, apply: bool) -> str:
     """The tool's text; in a dry run, without the "writes not available" note, which here only
     reflects that writes are enabled solely by --apply."""
     if apply:
@@ -131,7 +140,7 @@ async def run(args: argparse.Namespace) -> int:
         f"- To create: {data.get('to_create')} · to schedule: {data.get('to_schedule')} · "
         f"obsolete to delete: {data.get('to_delete')}",
         "",
-        _dry_run_text(str(data.get("text", "")), args.apply),
+        dry_run_text(str(data.get("text", "")), args.apply),
     ]
     if not args.apply:
         send = int(data.get("to_create", 0)) + int(data.get("to_schedule", 0))
@@ -142,8 +151,7 @@ async def run(args: argparse.Namespace) -> int:
             f"**{data.get('to_delete', 0)}** (same plan, from_date and weeks).",
         ]
     _report(lines, args.summary)
-    failed = [r for r in data.get("created", []) if isinstance(r, dict) and not r.get("ok", True)]
-    return 1 if failed else 0
+    return 0 if not args.apply or push_complete(data) else 1
 
 
 def main(argv: Sequence[str] | None = None) -> int:
