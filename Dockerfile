@@ -15,7 +15,8 @@ USER app
 
 EXPOSE 8000
 
+# Liveness only: a JSON-RPC ping without an MCP session is rejected with HTTP 400.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s \
-  CMD python -c "import urllib.request; r=urllib.request.Request('http://localhost:8000/mcp',method='POST',headers={'Content-Type':'application/json','Accept':'application/json, text/event-stream'},data=b'{\"jsonrpc\":\"2.0\",\"method\":\"ping\",\"id\":1}'); urllib.request.urlopen(r)" || exit 1
+  CMD python -c "import socket; socket.create_connection(('127.0.0.1', 8000), 3).close()" || exit 1
 
 ENTRYPOINT ["./entrypoint.sh"]

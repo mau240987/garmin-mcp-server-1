@@ -6,7 +6,10 @@ see a raw third-party exception.
 
 from __future__ import annotations
 
+import os
+import re
 import threading
+import time
 from collections.abc import Callable
 from typing import Any, Protocol, TypeVar
 
@@ -46,6 +49,54 @@ def _default_factory(settings: Settings) -> Any:
     return Garmin(settings.email, settings.password, retry_attempts=0)
 
 
+_STATUS_RE = re.compile(r"(?:API Error|client error \(|status[ =:]+)\s*(\d{3})", re.IGNORECASE)
+
+#: After a failed login, further calls fail fast for this many seconds instead of hitting
+#: Garmin's SSO again (repeated failed logins risk account lockout / bot blocking).
+LOGIN_FAILURE_COOLDOWN_S = 60.0
+
+
+def http_status(exc: BaseException) -> int | None:
+    """HTTP status of a garminconnect/requests error, from `.response` or the message."""
+    response = getattr(exc, "response", None)
+    code = getattr(response, "status_code", None)
+    if isinstance(code, int):
+        return code
+    match = _STATUS_RE.search(str(exc))
+    return int(match.group(1)) if match else None
+
+
+def _by_status(status: int, exc: BaseException, operation: str) -> GarminMCPError | None:
+    if status in (401, 403):
+        return AuthenticationError(
+            f"Garmin Connect rejected the session during {operation} (HTTP {status}).",
+            remediation=(
+                "Check GARMIN_EMAIL/GARMIN_PASSWORD, or delete the token directory and log in "
+                "again with `garmin-coach-mcp --login`."
+            ),
+            cause=exc,
+        )
+    if status == 429:
+        return RateLimitError(
+            f"Garmin Connect rate-limited {operation}.",
+            remediation="Wait a few minutes before calling Garmin again; do not retry in a loop.",
+            cause=exc,
+        )
+    if status == 404:
+        return NotFoundError(
+            f"{operation}: the requested item does not exist on Garmin Connect.",
+            remediation="Check the id (use get_activities or get_workouts to list valid ids).",
+            cause=exc,
+        )
+    if 400 <= status < 500:
+        return InvalidRequestError(
+            f"Garmin Connect refused {operation} as invalid (HTTP {status}).",
+            remediation="Check the arguments; the request will fail the same way if repeated.",
+            cause=exc,
+        )
+    return None
+
+
 def map_exception(exc: BaseException, operation: str) -> GarminMCPError:
     """Translate a garminconnect / transport exception into our taxonomy."""
     if isinstance(exc, GarminMCPError):
@@ -59,6 +110,12 @@ def map_exception(exc: BaseException, operation: str) -> GarminMCPError:
         )
     except ImportError:  # pragma: no cover - dependency is mandatory
         return UpstreamServiceError(f"{operation} failed.", cause=exc)
+
+    status = http_status(exc)
+    if status is not None and not isinstance(exc, GarminConnectAuthenticationError):
+        mapped = _by_status(status, exc, operation)
+        if mapped is not None:
+            return mapped
 
     if isinstance(exc, GarminConnectAuthenticationError):
         return AuthenticationError(
@@ -83,13 +140,6 @@ def map_exception(exc: BaseException, operation: str) -> GarminMCPError:
             cause=exc,
         )
     if isinstance(exc, GarminConnectConnectionError):
-        text = str(exc)
-        if "client error (4" in text:
-            return InvalidRequestError(
-                f"Garmin Connect refused {operation} as invalid.",
-                remediation="Check the arguments; the request will fail the same way if repeated.",
-                cause=exc,
-            )
         return UpstreamServiceError(
             f"Garmin Connect is unreachable or failing during {operation}.",
             remediation="Retry later; Garmin Connect may be temporarily unavailable.",
@@ -122,6 +172,7 @@ class GarminSession:
         self._factory = factory or _default_factory
         self._client: Any = None
         self._lock = threading.Lock()
+        self._login_failure: tuple[float, GarminMCPError] | None = None
 
     @property
     def settings(self) -> Settings:
@@ -132,28 +183,64 @@ class GarminSession:
         return d.is_dir() and any(d.iterdir())
 
     def api(self) -> Any:
-        """Authenticated client: resume from stored tokens, else log in with credentials."""
+        """Authenticated client: resume from stored tokens, else log in with credentials.
+
+        Login errors are marked `during_login` and are never retried by `call`; a failed login
+        is cached for LOGIN_FAILURE_COOLDOWN_S so one tool call cannot hammer Garmin's SSO.
+        """
         with self._lock:
             if self._client is not None:
                 return self._client
-            if not self._has_tokens() and not self._settings.has_credentials:
-                raise ConfigurationError(
-                    "No saved Garmin session and no credentials configured.",
-                    remediation=(
-                        "Set GARMIN_EMAIL and GARMIN_PASSWORD for the first login (tokens are "
-                        f"then stored in {self._settings.token_dir}), or point GARMIN_TOKEN_DIR "
-                        "at an existing token directory."
-                    ),
-                )
-            self._settings.token_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if self._login_failure is not None:
+                failed_at, error = self._login_failure
+                if time.monotonic() - failed_at < LOGIN_FAILURE_COOLDOWN_S:
+                    raise error
+                self._login_failure = None
             try:
-                client = self._factory(self._settings)
-                client.login(str(self._settings.token_dir))
-            except Exception as exc:
-                raise map_exception(exc, "login") from exc
+                client = self._login()
+            except GarminMCPError as error:
+                error.during_login = True
+                self._login_failure = (time.monotonic(), error)
+                raise
             log.info("Garmin Connect session ready")
             self._client = client
             return client
+
+    def _login(self) -> Any:
+        token_dir = self._settings.token_dir
+        if not self._has_tokens() and not self._settings.has_credentials:
+            raise ConfigurationError(
+                "No saved Garmin session and no credentials configured.",
+                remediation=(
+                    "Set GARMIN_EMAIL and GARMIN_PASSWORD for the first login (tokens are "
+                    f"then stored in {token_dir}), or point GARMIN_TOKEN_DIR "
+                    "at an existing token directory."
+                ),
+            )
+        try:
+            token_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        except OSError as exc:
+            raise ConfigurationError(
+                f"Cannot create the token directory {token_dir}.",
+                remediation="Set GARMIN_TOKEN_DIR to a directory this user can write.",
+                cause=exc,
+            ) from exc
+        if not os.access(token_dir, os.W_OK | os.X_OK):
+            # garminconnect silently ignores token-save failures; every restart would then
+            # need a full (possibly MFA) login.
+            raise ConfigurationError(
+                f"The token directory {token_dir} is not writable.",
+                remediation=(
+                    "Fix its ownership/permissions (e.g. a Docker volume created by an older "
+                    "root image: `chown -R 10001 /data/tokens`) or set GARMIN_TOKEN_DIR."
+                ),
+            )
+        try:
+            client = self._factory(self._settings)
+            client.login(str(token_dir))
+        except Exception as exc:
+            raise map_exception(exc, "login") from exc
+        return client
 
     def invalidate(self) -> None:
         with self._lock:
@@ -176,8 +263,10 @@ class GarminSession:
         def with_reauth() -> T:
             try:
                 return attempt()
-            except AuthenticationError:
-                if not idempotent:
+            except AuthenticationError as exc:
+                # Re-login only when an established session was rejected, never after a
+                # failed login (that would just repeat the failure against Garmin's SSO).
+                if not idempotent or exc.during_login:
                     raise
                 log.warning("%s: auth rejected, re-authenticating once", operation)
                 self.invalidate()

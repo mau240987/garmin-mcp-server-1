@@ -86,11 +86,18 @@ def test_read_only_mode_hides_writes(make_session: Callable[..., GarminSession])
     assert {t.name for t in tool_list(app)} == ORIGINAL_TOOLS - WRITE_TOOLS
 
 
+DEPRECATED_JSON_PARAMS = {"steps_json", "workouts_json"}
+
+
 def test_no_json_string_params_except_deprecated(app: MCPServer) -> None:
     for t in tool_list(app):
-        steps = t.input_schema["properties"].get("steps")
-        if steps:
-            assert "array" in json.dumps(steps)
+        for pname, schema in t.input_schema["properties"].items():
+            if pname.endswith("_json"):
+                assert pname in DEPRECATED_JSON_PARAMS, f"{t.name}.{pname}"
+                assert "Deprecated" in schema.get("description", "")
+    schemas = {t.name: t.input_schema for t in tool_list(app)}
+    assert "array" in json.dumps(schemas["push_workout"]["properties"]["steps"])
+    assert "array" in json.dumps(schemas["push_training_plan"]["properties"]["workouts"])
 
 
 # ------------------------------------------------------------------- reads
@@ -107,6 +114,11 @@ def test_get_activities(app: MCPServer, fake: FakeGarmin) -> None:
 def test_get_activities_type_filter_substring(app: MCPServer) -> None:
     out = call(app, "get_activities", {"activity_type": "running"})
     assert [a["activity_id"] for a in out["activities"]] == [1001, 1002]
+
+
+def test_get_activities_type_filter_is_case_insensitive(app: MCPServer) -> None:
+    out = call(app, "get_activities", {"activity_type": "Running"})
+    assert out["count"] == 2
 
 
 def test_get_activities_rejects_bad_limit(app: MCPServer) -> None:
@@ -192,6 +204,28 @@ def test_push_workout_accepts_deprecated_steps_json(app: MCPServer, fake: FakeGa
     assert not any(c[0] == "schedule_workout" for c in fake.calls)
 
 
+def test_push_workout_legacy_empty_schedule_date(app: MCPServer, fake: FakeGarmin) -> None:
+    out = call(app, "push_workout", {"name": "x", "steps": STEPS, "schedule_date": ""})
+    assert out["scheduled"] is False and out["scheduled_date"] is None
+
+
+def test_push_workout_legacy_default_duration(app: MCPServer, fake: FakeGarmin) -> None:
+    call(app, "push_workout", {"name": "x", "steps": [{"type": "run"}]})
+    step = fake.uploaded[0].workoutSegments[0].workoutSteps[0]
+    assert step.endConditionValue == 600.0
+
+
+def test_push_workout_missing_id_is_error(app: MCPServer, fake: FakeGarmin) -> None:
+    fake.upload_running_workout = lambda _w: {}  # type: ignore[method-assign]
+    with pytest.raises(ToolError) as info:
+        anyio.run(
+            app.call_tool,
+            "push_workout",
+            {"name": "x", "steps": STEPS, "schedule_date": "2026-11-05"},
+        )
+    assert "no workoutId" in str(info.value)
+
+
 def test_push_workout_requires_steps(app: MCPServer) -> None:
     with pytest.raises(ToolError):
         anyio.run(app.call_tool, "push_workout", {"name": "x"})
@@ -239,6 +273,19 @@ def test_push_training_plan_reports_per_entry_failure(app: MCPServer, fake: Fake
     assert [c[0] for c in fake.calls].count("upload_running_workout") == 1
 
 
+def test_push_training_plan_created_but_unscheduled_is_explicit(
+    app: MCPServer, fake: FakeGarmin
+) -> None:
+    fake.fail["schedule_workout"] = GarminConnectConnectionError("API Error 503 - down")
+    plan = [{"day_offset": 0, "name": "A", "steps": STEPS[:1]}]
+    out = call(
+        app, "push_training_plan", {"name": "P", "start_date": "2026-11-02", "workouts": plan}
+    )
+    entry = out["entries"][0]
+    assert entry["ok"] is False and entry["workout_id"] == 501
+    assert "created as workout 501" in entry["error"]
+
+
 def test_delete_workout(app: MCPServer, fake: FakeGarmin) -> None:
     out = call(app, "delete_workout", {"workout_id": "13"})
     assert out["deleted_ids"] == [13]
@@ -254,10 +301,21 @@ def test_delete_plan_workouts_refuses_broad_pattern(
 
 
 def test_delete_plan_workouts_dry_run_then_delete(app: MCPServer, fake: FakeGarmin) -> None:
-    dry = call(app, "delete_plan_workouts", {"name_contains": "plan-a", "dry_run": True})
+    dry = call(app, "delete_plan_workouts", {"name_contains": "plan-a"})  # dry run by default
     assert dry["deleted_ids"] == [] and "2 workouts match" in dry["text"]
     assert not any(c[0] == "delete_workout" for c in fake.calls)
-    out = call(app, "delete_plan_workouts", {"name_contains": "plan-a"})
+    for bad in (None, 1, 3):
+        args: dict[str, Any] = {"name_contains": "plan-a", "dry_run": False}
+        if bad is not None:
+            args["expected_count"] = bad
+        with pytest.raises(ToolError):
+            anyio.run(app.call_tool, "delete_plan_workouts", args)
+    assert not any(c[0] == "delete_workout" for c in fake.calls)
+    out = call(
+        app,
+        "delete_plan_workouts",
+        {"name_contains": "plan-a", "dry_run": False, "expected_count": 2},
+    )
     assert out["deleted_ids"] == [11, 12]
     assert [w["workoutId"] for w in fake.workouts] == [13]
 

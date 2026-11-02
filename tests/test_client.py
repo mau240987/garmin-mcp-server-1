@@ -31,6 +31,13 @@ from tests.conftest import FakeGarmin
         (GarminConnectTooManyRequestsError("429"), RateLimitError),
         (GarminConnectNotFoundError("Activity client error (404)"), NotFoundError),
         (GarminConnectConnectionError("Upload client error (400): bad"), InvalidRequestError),
+        # Real messages from garminconnect's transport for POST/DELETE (not wrapped by
+        # _handle_api_errors): "API Error <status> - ...".
+        (GarminConnectConnectionError("API Error 400 - bad workout"), InvalidRequestError),
+        (GarminConnectConnectionError("API Error 429 - slow down"), RateLimitError),
+        (GarminConnectConnectionError("API Error 401 - expired"), AuthenticationError),
+        (GarminConnectConnectionError("API Error 404 - gone"), NotFoundError),
+        (GarminConnectConnectionError("API Error 502 - bad gateway"), UpstreamServiceError),
         (GarminConnectConnectionError("Server error 503"), UpstreamServiceError),
         (ValueError("bad date"), InvalidRequestError),
         (TimeoutError(), UpstreamServiceError),
@@ -115,3 +122,63 @@ def test_auth_error_reauthenticates_once(
     fn = _flaky(1, GarminConnectAuthenticationError("expired"))
     assert make_session().call("read", fn) == "ok"
     assert [c[0] for c in fake.calls].count("login") == 2
+
+
+def test_status_taken_from_response_attribute() -> None:
+    exc = GarminConnectConnectionError("opaque")
+    exc.response = type("R", (), {"status_code": 422})()  # type: ignore[attr-defined]
+    assert isinstance(map_exception(exc, "op"), InvalidRequestError)
+
+
+def test_failed_login_is_not_retried_and_is_cached(
+    make_session: Callable[..., GarminSession], fake: FakeGarmin
+) -> None:
+    fake.fail["login"] = GarminConnectAuthenticationError("bad creds")
+    session = make_session()
+    for _ in range(3):
+        with pytest.raises(AuthenticationError):
+            session.call("read", lambda c: c.get_workouts())
+    assert [c[0] for c in fake.calls].count("login") == 1
+
+
+def test_login_network_error_not_retried(
+    make_session: Callable[..., GarminSession], fake: FakeGarmin
+) -> None:
+    fake.fail["login"] = GarminConnectConnectionError("API Error 503 - down")
+    with pytest.raises(UpstreamServiceError):
+        make_session().call("read", lambda c: c.get_workouts())
+    assert [c[0] for c in fake.calls].count("login") == 1
+
+
+def test_login_retried_after_cooldown(
+    make_session: Callable[..., GarminSession], fake: FakeGarmin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import garmin_coach_mcp.client as client_mod
+
+    fake.fail["login"] = GarminConnectAuthenticationError("bad creds")
+    session = make_session()
+    with pytest.raises(AuthenticationError):
+        session.api()
+    del fake.fail["login"]
+    monkeypatch.setattr(client_mod, "LOGIN_FAILURE_COOLDOWN_S", 0.0)
+    session.api()
+    assert [c[0] for c in fake.calls].count("login") == 2
+
+
+def test_unwritable_token_dir(
+    make_session: Callable[..., GarminSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import garmin_coach_mcp.client as client_mod
+
+    monkeypatch.setattr(client_mod.os, "access", lambda *_a, **_k: False)
+    with pytest.raises(ConfigurationError) as info:
+        make_session().api()
+    assert "not writable" in info.value.message
+
+
+def test_token_dir_creation_failure_is_mapped(settings: Settings, tmp_path: Any) -> None:
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    s = Settings(email="a@b.invalid", password="p", token_dir=blocker / "tokens")
+    with pytest.raises(ConfigurationError):
+        GarminSession(s, factory=lambda _s: FakeGarmin()).api()

@@ -51,7 +51,10 @@ class WorkoutStep(_Strict):
         default=None,
         ge=1,
         le=360_000,
-        description="Seconds when duration_type='time', meters when 'distance'. Omit for 'open'.",
+        description=(
+            "Seconds when duration_type='time' (default 600), meters when 'distance' "
+            "(required). Omit for 'open'."
+        ),
     )
     pace_low: PaceStr | None = Field(default=None, description="Slower end of pace range.")
     pace_high: PaceStr | None = Field(default=None, description="Faster end of pace range.")
@@ -64,8 +67,10 @@ class WorkoutStep(_Strict):
 
     @model_validator(mode="after")
     def _check(self) -> WorkoutStep:
-        if self.duration_type != "open" and self.duration_value is None:
-            raise ValueError("duration_value is required unless duration_type is 'open'")
+        if self.duration_type == "time" and self.duration_value is None:
+            self.duration_value = 600  # legacy default: 10 minutes
+        if self.duration_type == "distance" and self.duration_value is None:
+            raise ValueError("duration_value (meters) is required when duration_type='distance'")
         if (self.pace_low is None) != (self.pace_high is None):
             raise ValueError("give both pace_low and pace_high, or neither")
         if (

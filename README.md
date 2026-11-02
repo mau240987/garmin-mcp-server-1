@@ -29,8 +29,12 @@ Built on the battle-tested [garminconnect](https://github.com/cyberjunky/python-
   exponential backoff (`GARMIN_MAX_RETRIES`, default 2) and re-authenticate once on an expired
   session. Writes (create/schedule/delete) run **exactly once**, so a half-applied create is
   never duplicated.
-- **Safe bulk delete**: `delete_plan_workouts` requires a pattern of at least 3 characters and
-  supports `dry_run`. (The old version deleted *every* workout when called without a pattern.)
+- **Safe bulk delete**: `delete_plan_workouts` requires a pattern of at least 3 characters,
+  is a **dry run by default**, and deletes only with `dry_run=false` plus `expected_count` equal
+  to the dry-run match count. (The old version deleted *every* workout when called without a
+  pattern.)
+- **Login protection**: a failed login is never retried within a call and further calls fail
+  fast for 60 s, to avoid account lockout from repeated SSO attempts.
 - **Read-only mode**: `GARMIN_READ_ONLY=true` or `--read-only` does not register write tools.
 - `get_health_summary` lists every metric it could not read in `unavailable`, with the reason.
 
@@ -40,7 +44,7 @@ Built on the battle-tested [garminconnect](https://github.com/cyberjunky/python-
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.12+ (required by `garminconnect` 0.3.20)
 - A Garmin Connect account
 - A Garmin device (for workout sync)
 

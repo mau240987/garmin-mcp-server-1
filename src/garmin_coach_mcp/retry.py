@@ -5,12 +5,10 @@ from __future__ import annotations
 import random
 import time
 from collections.abc import Callable
-from typing import TypeVar
 
 from garmin_coach_mcp.errors import GarminMCPError
 from garmin_coach_mcp.logging_utils import get_logger
 
-T = TypeVar("T")
 log = get_logger("retry")
 
 
@@ -20,7 +18,7 @@ def backoff_delay(attempt: int, *, base: float = 1.0, cap: float = 10.0) -> floa
     return float(delay * (0.8 + 0.4 * random.random()))  # noqa: S311 - jitter, not crypto
 
 
-def call_with_retry(
+def call_with_retry[T](
     fn: Callable[[], T],
     *,
     operation: str,
@@ -39,7 +37,7 @@ def call_with_retry(
         try:
             return fn()
         except GarminMCPError as exc:
-            if not exc.retryable or attempt >= retries:
+            if not exc.retryable or exc.during_login or attempt >= retries:
                 raise
             delay = backoff_delay(attempt, base=base_delay, cap=max_delay)
             log.warning(

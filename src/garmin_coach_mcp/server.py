@@ -10,11 +10,11 @@ from typing import Annotated, Any, TypeVar
 
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
-from pydantic import Field
+from pydantic import BeforeValidator, Field
 
 from garmin_coach_mcp import __version__
 from garmin_coach_mcp.client import SupportsCall
-from garmin_coach_mcp.errors import GarminMCPError, InvalidRequestError
+from garmin_coach_mcp.errors import GarminMCPError, InvalidRequestError, UpstreamServiceError
 from garmin_coach_mcp.formatting import format_duration, format_pace, pace_from
 from garmin_coach_mcp.logging_utils import get_logger
 from garmin_coach_mcp.models import (
@@ -113,6 +113,11 @@ def _activity_line(s: ActivitySummary) -> str:
     )
 
 
+def _empty_to_none(value: Any) -> Any:
+    """Legacy clients send schedule_date="" for 'not scheduled'."""
+    return None if isinstance(value, str) and not value.strip() else value
+
+
 def _delete_one(workout_id: int, client: Any) -> Any:
     return client.delete_workout(workout_id)
 
@@ -176,7 +181,6 @@ def build_server(
             str,
             Field(
                 max_length=40,
-                pattern=r"^[a-z_]*$",
                 description=(
                     "Optional filter on Garmin's activity type key (substring match), e.g. "
                     "'running' (also matches trail_running), 'cycling', 'swimming', 'walking', "
@@ -188,7 +192,8 @@ def build_server(
         raw = run("get_activities", lambda c: c.get_activities(start, limit))
         items = [summarize_activity(a) for a in (raw or []) if isinstance(a, dict)]
         if activity_type:
-            items = [s for s in items if activity_type in s.type.lower()]
+            needle = activity_type.strip().lower()
+            items = [s for s in items if needle in s.type.lower()]
         text = (
             "\n".join([f"Found {len(items)} activities:", *map(_activity_line, items)])
             if items
@@ -396,6 +401,14 @@ def build_server(
             "push_workout.create", lambda c: c.upload_running_workout(workout), idempotent=False
         )
         workout_id = _as_int(_dict(created).get("workoutId"))
+        if workout_id is None:
+            raise UpstreamServiceError(
+                "Garmin accepted the workout but returned no workoutId, so it was not scheduled.",
+                remediation=(
+                    "Check get_workouts for a workout with this name before retrying, to avoid "
+                    "creating a duplicate."
+                ),
+            )
         result = PushWorkoutResult(workout_id=workout_id, name=name, scheduled_date=when)
         if when is not None and workout_id is not None:
             try:
@@ -429,7 +442,9 @@ def build_server(
         ] = None,
         estimated_duration_minutes: Annotated[int, Field(ge=1, le=1440)] = 60,
         schedule_date: Annotated[
-            dt.date | None, Field(description="Optional calendar date YYYY-MM-DD.")
+            dt.date | None,
+            BeforeValidator(_empty_to_none),
+            Field(description="Optional calendar date YYYY-MM-DD."),
         ] = None,
         steps_json: Annotated[
             str | list[Any] | None,
@@ -456,7 +471,9 @@ def build_server(
         description=(
             "Create and schedule several running workouts starting at start_date. Each entry is "
             "created once (no automatic retry); per-entry results are reported so failed "
-            "entries can be re-sent individually. Ask the athlete to confirm first."
+            "entries can be re-sent individually. An entry created but not scheduled has a "
+            "workout_id: do not re-create it (schedule or delete it instead). "
+            "Ask the athlete to confirm first."
         ),
         annotations=CREATE,
         structured_output=True,
@@ -505,7 +522,10 @@ def build_server(
                         name=entry.name,
                         workout_id=r.workout_id,
                         ok=ok,
-                        error=None if ok else r.schedule_error,
+                        error=None
+                        if ok
+                        else f"created as workout {r.workout_id} but NOT scheduled: "
+                        f"{r.schedule_error}",
                     )
                 )
             except GarminMCPError as exc:
@@ -555,7 +575,9 @@ def build_server(
         description=(
             "Delete every workout whose name contains `name_contains` (case-insensitive), e.g. "
             "to clear a plan before re-uploading it. The pattern is mandatory (min 3 chars). "
-            "Use dry_run=true first and show the athlete the list. Irreversible."
+            "Defaults to dry_run=true (lists matches only); to delete, call again with "
+            "dry_run=false and expected_count equal to the dry-run count, after the athlete "
+            "confirmed the list. Irreversible."
         ),
         annotations=DELETE,
         structured_output=True,
@@ -565,7 +587,11 @@ def build_server(
             str,
             Field(min_length=3, max_length=80, description="Substring of the workout names."),
         ],
-        dry_run: Annotated[bool, Field(description="Only list what would be deleted.")] = False,
+        dry_run: Annotated[bool, Field(description="Only list what would be deleted.")] = True,
+        expected_count: Annotated[
+            int | None,
+            Field(ge=1, le=500, description="Required when dry_run=false: the dry-run count."),
+        ] = None,
     ) -> DeleteResult:
         needle = name_contains.strip().lower()
         if len(needle) < 3:
@@ -582,6 +608,15 @@ def build_server(
             and _as_int(w.get("workoutId")) is not None
         ]
         ids = [int(w["workoutId"]) for w in matches]
+        if not dry_run and ids and expected_count != len(ids):
+            raise InvalidRequestError(
+                f"{len(ids)} workouts match '{name_contains}', expected_count is "
+                f"{expected_count}. Nothing was deleted.",
+                remediation=(
+                    "Run with dry_run=true, show the list to the athlete, then pass "
+                    "expected_count equal to the number of matches."
+                ),
+            ).to_tool_error()
         if dry_run or not ids:
             names = ", ".join(f"{w.get('workoutName')} [{w.get('workoutId')}]" for w in matches)
             return DeleteResult(

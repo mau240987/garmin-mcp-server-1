@@ -9,6 +9,8 @@ class GarminMCPError(Exception):
     """Base class for every error this server raises on purpose."""
 
     retryable: bool = False
+    #: Set by the session when the error came from logging in; such errors are never retried.
+    during_login: bool = False
 
     def __init__(
         self,
@@ -46,7 +48,7 @@ class RateLimitError(GarminMCPError):
 
 
 class UpstreamServiceError(GarminMCPError):
-    """Garmin 5xx, network failure or timeout. Safe to retry for reads."""
+    """Garmin 5xx, network failure or timeout. Safe to retry for reads (not during login)."""
 
     retryable = True
 

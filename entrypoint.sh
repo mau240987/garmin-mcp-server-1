@@ -1,13 +1,15 @@
 #!/bin/bash
 set -e
 
+TOKEN_DIR="${GARMIN_TOKEN_DIR:-/data/tokens}"
+
 echo "============================================"
 echo "  Garmin MCP Server"
 echo "============================================"
 echo ""
 
 # Check if Garmin tokens exist (= already logged in before)
-if [ -d "/data/tokens" ] && [ "$(ls -A /data/tokens 2>/dev/null)" ]; then
+if [ -d "$TOKEN_DIR" ] && [ "$(ls -A "$TOKEN_DIR" 2>/dev/null)" ]; then
     echo "  Found saved Garmin tokens."
     echo "  Credentials are NOT required."
     echo ""
@@ -38,6 +40,12 @@ else
     fi
     echo "  Credentials provided. Will authenticate on first API call."
     echo ""
+fi
+
+if [ -d "$TOKEN_DIR" ] && [ ! -w "$TOKEN_DIR" ]; then
+    echo "  ERROR: token directory $TOKEN_DIR is not writable by uid $(id -u)."
+    echo "  Volumes created by older (root) images need: chown -R $(id -u) <volume path>"
+    exit 1
 fi
 
 echo "  Transport:  HTTP (streamable-http)"

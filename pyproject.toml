@@ -9,7 +9,7 @@ description = "MCP server for Garmin Connect: activities, health metrics and str
 readme = "README.md"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE"]
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 authors = [{ name = "garmin-coach-mcp contributors" }]
 keywords = ["mcp", "garmin", "running", "training", "model-context-protocol"]
 classifiers = [
@@ -44,7 +44,7 @@ pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py312"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
@@ -55,7 +55,7 @@ ignore = ["S101"]
 "tests/*" = ["S", "BLE"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 strict = true
 packages = ["garmin_coach_mcp"]
 mypy_path = "src"

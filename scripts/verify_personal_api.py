@@ -89,17 +89,33 @@ NEGATIVE_CHECKS: dict[str, str] = {
 }
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow redirects: urllib would re-send the Authorization header."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def request(method: str, path: str, headers: dict[str, str]) -> tuple[int, Any]:
+    """Return (status, parsed body). Status 0 = network error; body never contains secrets."""
     req = urllib.request.Request(BASE + path, method=method, headers=headers)  # noqa: S310
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+        with _OPENER.open(req, timeout=30) as resp:
             body = resp.read()
             ctype = resp.headers.get("Content-Type", "")
             if "json" in ctype:
-                return resp.status, json.loads(body or b"null")
+                try:
+                    return resp.status, json.loads(body or b"null")
+                except ValueError:
+                    return resp.status, "<invalid JSON>"
             return resp.status, f"<{ctype or 'binary'} {len(body)} bytes>"
     except urllib.error.HTTPError as exc:
         return exc.code, None
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return 0, f"<network error: {type(exc).__name__}>"
 
 
 def field_report(payload: Any, fields: list[str]) -> str:

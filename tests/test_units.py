@@ -81,8 +81,9 @@ def test_settings_invalid(env: dict[str, str]) -> None:
 
 
 def test_step_validation() -> None:
+    assert WorkoutStep(duration_type="time").duration_value == 600  # legacy default
     with pytest.raises(ValidationError):
-        WorkoutStep(duration_type="time")  # missing duration_value
+        WorkoutStep(duration_type="distance")  # distance has no sensible default
     with pytest.raises(ValidationError):
         WorkoutStep(duration_value=60, pace_low="5:00")  # half a range
     with pytest.raises(ValidationError):
