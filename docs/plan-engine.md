@@ -7,7 +7,7 @@ producono lo stesso piano, senza casualità, senza orologio e senza LLM. I test
 circa 7.200 combinazioni (distanza, storico, giorni, anticipo, giorno di gara, giorno del lungo,
 inizio a metà settimana, date indisponibili) e su un test di regressione per ogni difetto
 trovato dalla revisione indipendente. Volumi, lungo e progressione si calcolano sempre su
-quanto è **effettivamente pianificato** (versione 1.2).
+quanto è **effettivamente pianificato** (versione 1.3).
 
 | Regola | Contenuto |
 |---|---|
@@ -25,6 +25,7 @@ quanto è **effettivamente pianificato** (versione 1.2).
 | R11 Ripresa | Una settimana in cui le date indisponibili tolgono più di metà del volume è uno stop. La ripresa avviene al 75% (dopo 1 settimana) o al 60% (dopo 2 o più) del carico precedente, compreso il lungo, con avviso. |
 | R8 Avvisi | Preparazione corta, storico vuoto, giorni ridotti, volume limitato dai giorni, maratona/ultra per principianti, picco irraggiungibile, gara troppo vicina per la distanza. Il motore non accelera mai per "recuperare". |
 | R12 Varietà | Solo livello intermedio/avanzato, niente ultra, solo settimane di carico, mai nella prima settimana del piano. Le settimane di carico si alternano: in base e costruzione una settimana la qualità è un **fartlek** (8×1′ brillante/1′ facile, oppure 5×3′/2′ se la seduta è più lunga), l'altra il **lungo ha una parte più veloce**: finale in progressione Z3 (base: 15% del lungo, max 4 km; costruzione: 25%, max 8 km; per la maratona con tempo obiettivo, finale a ritmo gara). Nella fase specifica di mezza e maratona con tempo obiettivo: 2 blocchi a ritmo gara (30% del lungo, max 10 km, 1 km facile tra i blocchi). Fartlek e lungo variato non stanno mai nella stessa settimana. I volumi non cambiano: cambia solo come si corrono alcuni chilometri. Senza tempo obiettivo nessun ritmo gara (solo finali Z3 a sensazione). `make_easy` su un lungo variato lo rende un lungo facile della stessa distanza. |
+| R13 Ritmi | Il ritmo facile viene dalla **prestazione**: VDOT di Daniels & Gilbert dalla migliore corsa intera di almeno 5 km nelle settimane analizzate (tempo totale, VDOT plausibile 20-85). Facile = ritmo al 70% del VDOT, con fascia fino a +30 s/km (Daniels: corse facili al 59-74%). Il tempo usa la soglia all'88% come target di passo (+8/-5 s). Senza corse di 5 km o più si usa, come prima, la mediana delle corse quasi tutte in Z1-Z2 (tempo in movimento). Se il ritmo da zone FC è più lento di oltre 45 s/km, il profilo segnala che la Z2 su Garmin è probabilmente impostata troppo bassa. Un ritmo facile più veloce alza anche il tetto del lungo basato sulla durata (R4). |
 | Giorni | Schema per giorni/settimana con lungo la domenica (spostabile). Qualità martedì (e giovedì). Ultra in fase specifica: medio-lungo il sabato (back-to-back) da 30 km/settimana in su. |
 | Date indisponibili | Le sessioni vengono saltate (con avviso), non spostate. Si riparte da quanto effettivamente pianificato (R11 per gli stop lunghi). |
 

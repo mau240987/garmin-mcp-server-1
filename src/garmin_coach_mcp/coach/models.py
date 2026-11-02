@@ -177,6 +177,13 @@ class AthleteBaseline(_Model):
     longest_run_km: float = Field(default=0.0, ge=0)
     runs_per_week: float = Field(default=0.0, ge=0)
     easy_pace_s_per_km: float | None = Field(default=None, gt=0, le=1200)
+    vdot: float | None = Field(
+        default=None,
+        ge=20,
+        le=85,
+        description="Performance level (Daniels VDOT) from the best recent effort, if any.",
+    )
+    vdot_source: str | None = Field(default=None, description="The effort the VDOT comes from.")
     from_garmin: bool = Field(default=False, description="True when derived from Garmin data.")
 
     @property
@@ -261,6 +268,12 @@ class TrainingPlan(_Model):
     @property
     def easy_pace(self) -> float | None:
         return self.baseline.easy_pace_s_per_km
+
+    @property
+    def threshold_pace(self) -> float | None:
+        from garmin_coach_mcp.coach.vdot import threshold_pace
+
+        return threshold_pace(self.baseline.vdot) if self.baseline.vdot else None
 
     def week_of(self, day: dt.date) -> PlanWeek | None:
         return next(

@@ -61,6 +61,9 @@ def test_dry_run_checks_login_and_sends_nothing(env: tuple[Path, Writer], tmp_pa
     assert "DRY RUN" in text and "Garmin login: OK" in text
     assert writer.listed == 1 and writer.created == [] and writer.scheduled == []
     assert re.search(r"expected_count` = \*\*(\d+)\*\*", text)
+    # Writes are disabled in a dry run on purpose: no misleading "not available" note.
+    assert "not available in this configuration" not in text
+    assert "enabled only with apply" in text
 
 
 def test_apply_needs_the_dry_run_counts(env: tuple[Path, Writer], tmp_path: Path) -> None:
