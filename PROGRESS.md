@@ -17,7 +17,7 @@ notes predate MCP SDK 2.3 (snake_case `ToolAnnotations`, `mcp.server.mcpserver`)
 | C3 | Race Coach MCP tools | **Done** | 6 brief tools + `push_plan_to_garmin` (`coach/tools.py`, `profile.py`, `review.py`, `updates.py`, `sessions.py`). |
 | C4 | Export md / ics / fit | **Done** | `coach/export.py`; FIT via `fit-tool` (BSD-3); FIT files decoded back in tests. Not yet imported on a real device. |
 | S1–S2 | Claude skill/plugin, ChatGPT/Gemini instructions | Not started | |
-| V | Independent review + E2E | Partial | Review of H done by a separate agent; all findings fixed (see below). E2E pending later pieces. |
+| V | Independent review + E2E | Partial | Every piece (H, A1-A4, C1-C4) reviewed by a separate agent; all findings fixed (see below). E2E on real clients pending (S1-S2). |
 
 ## H — what was done
 
@@ -104,3 +104,25 @@ The tests were strengthened (non-circular checks, wider matrix incl. long-run da
 start, unavailable dates); they caught three more defects during the fix (stagnation after a
 gap, easy > long when days increase, race week above the taper week). The reviewer's own
 scan now reports only the intentional 8 km minimum week.
+
+## Independent review of C3+C4 — findings and fixes
+
+Nothing critical (no unconfirmed sends, no deletes of foreign workouts, read-only hides the push,
+FIT units/scales and ICS format verified). Fixed:
+1. A failed schedule was never retried → `garmin_scheduled` flag; the next push schedules the
+   existing workout (counted in the dry run and expected_count), never re-creates it.
+2. Regenerating with generate_training_plan duplicated pushed workouts → older plans of the goal
+   are marked superseded and their future Garmin workouts become stale in the new plan.
+3. review_week suggested cuts from partial weeks → volume suggestions only for completed weeks.
+4. regenerate_from restarted from base / spliced weeks → regenerates from the next Monday, no
+   base restart, seeded from Garmin or (fallback) from the plan's own volume.
+5. move onto an unavailable date accepted → rejected.
+6. apply_plan_update ignored the plan revision → `expected_revision`.
+7. ICS revisions did not propagate → SEQUENCE = revision, DTSTAMP = export time, CANCELLED events
+   for removed/moved sessions, CR stripped.
+8. Deletes were not confirmed; an interrupted create could duplicate → `expected_delete_count`;
+   `garmin_push_pending` marks interrupted creates as uncertain (retry only on request).
+9. FIT files carried no attribution → in the workout description of each file.
+10. Export I/O errors and inverted ranges mapped; easy pace uses moving time.
+Re-running the reviewer's scripts also exposed: ultra_run/virtual_run not counted as runs, and
+make_easy dropping the easy pace hint — both fixed.

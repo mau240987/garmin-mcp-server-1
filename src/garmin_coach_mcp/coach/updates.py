@@ -21,6 +21,7 @@ from garmin_coach_mcp.coach.engine import (
 )
 from garmin_coach_mcp.coach.models import (
     AthleteBaseline,
+    Phase,
     PlannedSession,
     PlanRevision,
     PlanWeek,
@@ -29,6 +30,7 @@ from garmin_coach_mcp.coach.models import (
     TrainingPlan,
 )
 from garmin_coach_mcp.errors import InvalidRequestError
+from garmin_coach_mcp.formatting import format_pace
 
 HARD_KINDS = frozenset(
     {
@@ -109,6 +111,29 @@ def _retire(plan: TrainingPlan, session: PlannedSession) -> None:
     if session.garmin_workout_id is not None:
         plan.stale_garmin_workout_ids.append(session.garmin_workout_id)
         session.garmin_workout_id = None
+    session.garmin_scheduled = False
+    session.garmin_push_pending = False
+
+
+def _cancel_date(plan: TrainingPlan, day: dt.date) -> None:
+    """Remember a date that lost its session, so calendar exports can cancel the event."""
+    if day not in plan.cancelled_dates:
+        plan.cancelled_dates.append(day)
+
+
+def baseline_from_plan(plan: TrainingPlan, before: dt.date) -> AthleteBaseline:
+    """Baseline from the plan's own weeks before `before` (fallback when Garmin is down)."""
+    kept = [w for w in plan.weeks if w.start_date < before and w.phase is not Phase.TAPER]
+    loading = [w for w in kept if not w.is_recovery][-4:]
+    if not loading:
+        return plan.baseline
+    return plan.baseline.model_copy(
+        update={
+            "recent_weekly_km": round(sum(w.target_km for w in loading) / len(loading), 1),
+            "longest_run_km": max(w.long_run_km for w in kept),
+            "weeks_analyzed": max(plan.baseline.weeks_analyzed, len(kept)),
+        }
+    )
 
 
 def apply_changes(
@@ -151,6 +176,7 @@ def apply_changes(
             _editable(week.sessions[i], today)
             _retire(new, week.sessions[i])
             removed = week.sessions.pop(i)
+            _cancel_date(new, removed.date)
             _refresh(week)
             done.append(f"{change.date}: {removed.kind.value} {removed.distance_km:g} km skipped.")
         elif isinstance(change, MoveSession):
@@ -165,6 +191,11 @@ def apply_changes(
             if change.to_date < today or change.to_date >= goal.race_date:
                 raise _bad(
                     f"{change.to_date} is not a valid day.", "Pick a future day before the race."
+                )
+            if change.to_date in goal.unavailable_dates:
+                raise _bad(
+                    f"{change.to_date} is marked unavailable in the goal.",
+                    "Pick another day, or update the goal's unavailable dates.",
                 )
             if any(o.date == change.to_date for o in week.sessions):
                 raise _bad(
@@ -190,7 +221,10 @@ def apply_changes(
                         "Pick a day with an easy day (or rest) on both sides.",
                     )
             _retire(new, s)
+            _cancel_date(new, s.date)
             s.date = change.to_date
+            if change.to_date in new.cancelled_dates:
+                new.cancelled_dates.remove(change.to_date)
             _refresh(week)
             done.append(f"{change.date} → {change.to_date}: {s.kind.value} moved.")
         elif isinstance(change, MakeEasy):
@@ -204,7 +238,12 @@ def apply_changes(
                 distance_km=min(s.distance_km, EASY_MAX_KM[dclass]),
                 zone="Z2",
                 description="Easy run, conversational pace (Z2).",
-                pace_hint=s.pace_hint,
+                pace_hint=s.pace_hint
+                or (
+                    f"{format_pace(new.easy_pace)} - {format_pace(new.easy_pace + 30)} (easy)"
+                    if new.easy_pace
+                    else None
+                ),
             )
             _refresh(week)
             done.append(f"{change.date}: {s.kind.value} turned into an easy run.")
@@ -213,29 +252,37 @@ def apply_changes(
                 raise _bad(
                     f"{change.date} is not a valid day.", "Pick a future day before the race."
                 )
-            fresh = build_plan(goal, baseline or new.baseline, change.date)
-            cut = fresh.weeks[0].start_date
+            # Regenerate from the next Monday: the current week stays as planned, so no week is
+            # spliced from two plans (which could break the 10% rule).
+            cut = change.date + dt.timedelta(days=(7 - change.date.weekday()) % 7)
+            if cut >= goal.race_date:
+                raise _bad(
+                    "There is no full week left to regenerate before the race.",
+                    "Adjust single sessions with make_easy or skip_session instead.",
+                )
+            seed = baseline or baseline_from_plan(new, cut)
+            had_base = any(w.phase is Phase.BASE for w in new.weeks if w.start_date < cut)
+            fresh = build_plan(goal, seed, cut, include_base=not had_base)
             kept = [w for w in new.weeks if w.start_date < cut]
-            old_cut_week = next((w for w in new.weeks if w.start_date == cut), None)
             for w in new.weeks:
                 if w.start_date >= cut:
                     for s in w.sessions:
-                        if s.date >= change.date:
-                            _retire(new, s)
-            if old_cut_week is not None:
-                fresh.weeks[0].sessions = [
-                    s for s in old_cut_week.sessions if s.date < change.date
-                ] + fresh.weeks[0].sessions
-                _refresh(fresh.weeks[0])
+                        _retire(new, s)
+            new_dates = {s.date for w in fresh.weeks for s in w.sessions}
+            for w in new.weeks:
+                if w.start_date >= cut:
+                    for s in w.sessions:
+                        if s.date not in new_dates:
+                            _cancel_date(new, s.date)
             for offset, w in enumerate(fresh.weeks):
                 w.index = len(kept) + offset + 1
             new.weeks = kept + fresh.weeks
-            if baseline is not None:
-                new.baseline = baseline
+            new.baseline = seed
             new.warnings = fresh.warnings
             new.peak_weekly_km = max(w.target_km for w in new.weeks)
             new.engine_version = fresh.engine_version
-            done.append(f"Plan regenerated from {change.date} with the current baseline.")
+            source = "Garmin history" if baseline is not None else "the plan's own volume"
+            done.append(f"Plan regenerated from {cut} using {source}.")
 
     new.revision = plan.revision + 1
     new.history = [

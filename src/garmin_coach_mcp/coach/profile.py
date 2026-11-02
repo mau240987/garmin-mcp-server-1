@@ -26,7 +26,9 @@ def _num(value: Any) -> float:
 def is_run(activity: dict[str, Any]) -> bool:
     type_key = activity.get("activityType") or activity.get("activityTypeDTO") or {}
     key = str(type_key.get("typeKey") or "") if isinstance(type_key, dict) else ""
-    return "running" in key.lower()
+    # running, trail_running, treadmill_running, ..., but also ultra_run, virtual_run,
+    # obstacle_run (Garmin activity type keys).
+    return "run" in key.lower()
 
 
 def activity_date(activity: dict[str, Any]) -> dt.date | None:
@@ -120,7 +122,8 @@ def compute_profile(
     recent_km = round(sum(w.km for w in recent) / len(recent), 1) if recent else 0.0
 
     easy_paces = [
-        _num(a.get("duration")) / (_num(a.get("distance")) / 1000)
+        (_num(a.get("movingDuration")) or _num(a.get("duration")))
+        / (_num(a.get("distance")) / 1000)
         for a in runs
         if _num(a.get("distance")) >= 2000
         and (h := hard_share(a)) is not None

@@ -503,7 +503,7 @@ def test_push_dry_run_then_real(
     out = setup_plan(app)
     dry = call(app, "push_plan_to_garmin", {"from_date": "2026-11-16", "weeks": 1})
     assert dry["dry_run"] and dry["to_create"] == 4 and writer.created == []
-    assert "4 workout(s) to create" in dry["text"]
+    assert "4 workout(s) to send (4 create, 0 schedule)" in dry["text"]
     assert "expected_count" in err(
         app, "push_plan_to_garmin", {"from_date": "2026-11-16", "weeks": 1, "dry_run": False}
     )
@@ -534,15 +534,30 @@ def test_push_replaces_stale_workouts(app: MCPServer, writer: FakeGarminWriter) 
     assert upd["garmin_out_of_sync"] == 4
     dry = call(app, "push_plan_to_garmin", {"from_date": "2026-11-16", "weeks": 1})
     assert dry["to_create"] == 4 and dry["to_delete"] == 4
-    call(
+    # deletes must be confirmed too
+    assert "expected_delete_count" in err(
         app,
         "push_plan_to_garmin",
         {"from_date": "2026-11-16", "weeks": 1, "dry_run": False, "expected_count": 4},
     )
+    assert writer.deleted == []
+    call(
+        app,
+        "push_plan_to_garmin",
+        {
+            "from_date": "2026-11-16",
+            "weeks": 1,
+            "dry_run": False,
+            "expected_count": 4,
+            "expected_delete_count": 4,
+        },
+    )
     assert set(writer.deleted) == pushed and len(writer.created) == 8
 
 
-def test_push_schedule_failure_does_not_duplicate(app: MCPServer, writer: FakeGarminWriter) -> None:
+def test_push_schedule_failure_is_retried_without_duplicate(
+    app: MCPServer, writer: FakeGarminWriter
+) -> None:
     setup_plan(app)
     writer.fail_schedule_on = {dt.date(2026, 11, 17)}
     res = call(
@@ -551,9 +566,67 @@ def test_push_schedule_failure_does_not_duplicate(app: MCPServer, writer: FakeGa
         {"from_date": "2026-11-16", "weeks": 1, "dry_run": False, "expected_count": 4},
     )
     failed = [e for e in res["created"] if not e["ok"]]
-    assert len(failed) == 1 and failed[0]["workout_id"]  # created, id kept
-    assert (
-        call(app, "push_plan_to_garmin", {"from_date": "2026-11-16", "weeks": 1})["to_create"] == 0
+    assert len(failed) == 1 and failed[0]["workout_id"] and "not scheduled" in failed[0]["error"]
+    dry = call(app, "push_plan_to_garmin", {"from_date": "2026-11-16", "weeks": 1})
+    assert dry["to_create"] == 0 and dry["to_schedule"] == 1
+    writer.fail_schedule_on = set()
+    call(
+        app,
+        "push_plan_to_garmin",
+        {"from_date": "2026-11-16", "weeks": 1, "dry_run": False, "expected_count": 1},
+    )
+    assert len(writer.created) == 4  # nothing re-created
+    assert (failed[0]["workout_id"], dt.date(2026, 11, 17)) in writer.scheduled
+
+
+def test_push_interrupted_create_is_uncertain(
+    app: MCPServer, writer: FakeGarminWriter, store: CoachStore
+) -> None:
+    setup_plan(app)
+    original = writer.create_running_workout
+    calls = {"n": 0}
+
+    def flaky(workout: Any) -> dict[str, Any]:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise UpstreamServiceError("timeout", remediation="retry")  # may have been created
+        if calls["n"] == 3:
+            from garmin_coach_mcp.errors import InvalidRequestError
+
+            raise InvalidRequestError("bad workout", remediation="fix")  # certainly not created
+        return original(workout)
+
+    writer.create_running_workout = flaky  # type: ignore[method-assign]
+    call(
+        app,
+        "push_plan_to_garmin",
+        {"from_date": "2026-11-16", "weeks": 1, "dry_run": False, "expected_count": 4},
+    )
+    dry = call(app, "push_plan_to_garmin", {"from_date": "2026-11-16", "weeks": 1})
+    assert len(dry["uncertain"]) == 1 and dry["to_create"] == 1  # only the refused one
+    assert "UNCERTAIN" in dry["text"]
+    dry2 = call(
+        app, "push_plan_to_garmin", {"from_date": "2026-11-16", "weeks": 1, "retry_uncertain": True}
+    )
+    assert dry2["to_create"] == 2
+
+
+def test_regenerated_plan_does_not_duplicate_pushed_workouts(
+    app: MCPServer, writer: FakeGarminWriter, store: CoachStore
+) -> None:
+    first = setup_plan(app)
+    call(
+        app,
+        "push_plan_to_garmin",
+        {"from_date": "2026-11-16", "weeks": 1, "dry_run": False, "expected_count": 4},
+    )
+    second = call(app, "generate_training_plan", {"start_date": "2026-11-16"})
+    assert any("previous plan" in w for w in second["plan"]["warnings"])
+    assert store.get_plan(first["plan_id"]).superseded_by == second["plan_id"]
+    dry = call(app, "push_plan_to_garmin", {"from_date": "2026-11-16", "weeks": 1})
+    assert dry["to_delete"] == 4 and dry["to_create"] == 4
+    assert "replaced by" in err(
+        app, "push_plan_to_garmin", {"plan_id": first["plan_id"], "dry_run": False}
     )
 
 
@@ -588,3 +661,135 @@ def test_workflow_over_mcp_client(app: MCPServer) -> None:
                 assert not r.is_error, (name, r.content)
 
     anyio.run(go)
+
+
+# ------------------------------------------------- regressions from the C3/C4 review
+
+
+def test_review_mid_week_does_not_suggest_cuts(
+    app: MCPServer, reads: FakeGarminReads, store: CoachStore
+) -> None:
+    setup_plan(app)
+    tuesday = make_app(reads, store, today=dt.date(2026, 11, 17))
+    review = call(tuesday, "review_week", {})["review"]
+    assert review["adherence"] == 0  # nothing run yet
+    assert review["suggested_changes"] == []
+    assert any("not over yet" in s for s in review["suggestions"])
+    sunday_after = make_app(reads, store, today=dt.date(2026, 11, 23))
+    review = call(sunday_after, "review_week", {"week_start": "2026-11-16"})["review"]
+    assert review["suggested_changes"] and review["suggested_changes"][0]["op"] == "scale_week"
+
+
+def test_apply_expected_revision(app: MCPServer) -> None:
+    plan = setup_plan(app)["plan"]
+    easy = next(s for s in plan["weeks"][1]["sessions"] if s["kind"] == "easy")
+    msg = err(
+        app,
+        "apply_plan_update",
+        {"changes": [{"op": "skip_session", "date": easy["date"]}], "expected_revision": 7},
+    )
+    assert "revision 1, not 7" in msg
+    out = call(
+        app,
+        "apply_plan_update",
+        {"changes": [{"op": "skip_session", "date": easy["date"]}], "expected_revision": 1},
+    )
+    assert out["revision"] == 2
+
+
+def test_move_onto_unavailable_date_rejected(app: MCPServer) -> None:
+    call(app, "set_race_goal", {**MARATHON, "unavailable_dates": ["2026-11-19"]})
+    plan = call(app, "generate_training_plan", {"start_date": "2026-11-16"})["plan"]
+    easy = next(s for s in plan["weeks"][0]["sessions"] if s["kind"] == "easy")
+    msg = err(
+        app,
+        "apply_plan_update",
+        {"changes": [{"op": "move_session", "date": easy["date"], "to_date": "2026-11-19"}]},
+    )
+    assert "unavailable" in msg
+
+
+def test_regenerate_continues_the_plan(
+    app: MCPServer, reads: FakeGarminReads, store: CoachStore
+) -> None:
+    out = setup_plan(app)
+    later = make_app(reads, store, today=dt.date(2027, 1, 14))  # Thursday, plan week 9
+    reads.fail_reads = True  # fallback: plan's own volume
+    upd = call(
+        later, "apply_plan_update", {"changes": [{"op": "regenerate_from", "date": "2027-01-14"}]}
+    )
+    assert "plan's own volume" in upd["text"] and "2027-01-18" in upd["applied"][0]
+    plan = store.get_plan(out["plan_id"])
+    kept = [w for w in plan.weeks if w.start_date < dt.date(2027, 1, 18)]
+    fresh = [w for w in plan.weeks if w.start_date >= dt.date(2027, 1, 18)]
+    assert kept[-1].start_date == dt.date(2027, 1, 11)  # current week untouched
+    assert all(w.phase.value != "base" for w in fresh)  # no restart from base
+    last_loading = next(w for w in reversed(kept) if not w.is_recovery)
+    assert fresh[0].target_km <= last_loading.target_km * 1.1 + 0.51
+    assert fresh[0].target_km >= 0.6 * last_loading.target_km  # not back to square one
+
+
+def test_ics_revision_sequence_and_cancelled(app: MCPServer) -> None:
+    plan = setup_plan(app)["plan"]
+    easy = next(s for s in plan["weeks"][0]["sessions"] if s["kind"] == "easy")
+    call(app, "apply_plan_update", {"changes": [{"op": "skip_session", "date": easy["date"]}]})
+    ics = call(app, "export_plan", {"format": "ics", "to_date": "2026-11-22"})["content"]
+    day = easy["date"].replace("-", "")
+    assert "SEQUENCE:2" in ics and "STATUS:CANCELLED" in ics
+    assert f"UID:{plan['id']}-{day}@garmin-coach-mcp" in ics
+    assert "DTSTAMP:20261112T080000Z" in ics  # export time
+
+
+def test_fit_files_carry_attribution(app: MCPServer) -> None:
+    from fit_tool.fit_file import FitFile
+
+    setup_plan(app)
+    fit = call(app, "export_plan", {"format": "fit", "to_date": "2026-11-22"})
+    zf = zipfile.ZipFile(io.BytesIO(Path(fit["path"]).read_bytes()))
+    name = next(n for n in zf.namelist() if n.endswith(".fit"))
+    texts = [
+        str(f.get_value())
+        for r in FitFile.from_bytes(zf.read(name)).records
+        for f in getattr(r.message, "fields", [])
+        if isinstance(f.get_value(), str)
+    ]
+    assert any("Garmin device-sourced data" in t for t in texts)
+
+
+def test_export_rejects_inverted_range(app: MCPServer) -> None:
+    setup_plan(app)
+    assert "after to_date" in err(
+        app, "export_plan", {"format": "ics", "from_date": "2026-12-01", "to_date": "2026-11-01"}
+    )
+
+
+def test_easy_pace_uses_moving_time(reads: FakeGarminReads, store: CoachStore) -> None:
+    for a in reads.activities:
+        if "duration" in a and a.get("hrTimeInZone_1"):
+            a["movingDuration"] = a["distance"] / 1000 * 400  # stops excluded: 6:40/km
+    app = make_app(reads, store)
+    prof = call(app, "get_athlete_profile", {})["profile"]
+    assert prof["baseline"]["easy_pace_s_per_km"] == 400
+
+
+def test_ultra_and_virtual_runs_count(reads: FakeGarminReads, store: CoachStore) -> None:
+    for a in reads.activities:
+        if a["activityType"]["typeKey"] == "running" and a["distance"] == 14000:
+            a["activityType"] = {"typeKey": "ultra_run"}
+    prof = call(make_app(reads, store), "get_athlete_profile", {})["profile"]
+    assert prof["baseline"]["longest_run_km"] == 14.0
+    assert prof["baseline"]["recent_weekly_km"] == 30.0
+
+
+def test_make_easy_keeps_an_easy_pace(app: MCPServer, store: CoachStore) -> None:
+    out = setup_plan(app)
+    quality = next(
+        s
+        for w in out["plan"]["weeks"]
+        for s in w["sessions"]
+        if s["kind"] in ("tempo", "intervals", "race_pace")
+    )
+    call(app, "apply_plan_update", {"changes": [{"op": "make_easy", "date": quality["date"]}]})
+    plan = store.get_plan(out["plan_id"])
+    sess = next(s for w in plan.weeks for s in w.sessions if s.date.isoformat() == quality["date"])
+    assert sess.kind.value == "easy" and sess.pace_hint and "(easy)" in sess.pace_hint

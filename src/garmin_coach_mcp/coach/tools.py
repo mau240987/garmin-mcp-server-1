@@ -41,9 +41,11 @@ from garmin_coach_mcp.coach.sessions import session_steps, workout_name
 from garmin_coach_mcp.coach.storage import CoachStore
 from garmin_coach_mcp.coach.updates import PlanChange, RegenerateFrom, apply_changes
 from garmin_coach_mcp.errors import (
+    ConfigurationError,
     GarminMCPError,
     InvalidRequestError,
     NotFoundError,
+    UpstreamServiceError,
 )
 from garmin_coach_mcp.workouts import build_running_workout
 
@@ -131,7 +133,15 @@ class PushResult(BaseModel):
     plan_id: str
     dry_run: bool
     to_create: int
+    to_schedule: int = Field(
+        default=0, description="Already-created workouts whose scheduling failed earlier."
+    )
     to_delete: int
+    uncertain: list[dt.date] = Field(
+        default_factory=list,
+        description="Sessions whose create was interrupted: check Garmin Connect, then retry "
+        "with retry_uncertain=true if the workout is not there.",
+    )
     created: list[PushEntry] = Field(default_factory=list)
     deleted: list[int] = Field(default_factory=list)
     text: str
@@ -220,6 +230,25 @@ def register_coach_tools(
         acts = router.select(Capability.ACTIVITIES_BY_DATE).activities_between(first, day)
         recovery, notes = fetch_recovery(day) if with_recovery else (None, [])
         return compute_profile(acts, day, weeks, recovery), notes
+
+    def supersede_older_plans(goal_id: str, plan: TrainingPlan, day: dt.date) -> list[TrainingPlan]:
+        """The new plan replaces older ones of the same goal: their future Garmin workouts
+        become stale in the new plan (removed on the next push), so nothing is duplicated."""
+        changed: list[TrainingPlan] = []
+        for old in store.list_plans(goal_id):
+            if old.id == plan.id or old.superseded_by is not None:
+                continue
+            plan.stale_garmin_workout_ids.extend(old.stale_garmin_workout_ids)
+            old.stale_garmin_workout_ids = []
+            for w in old.weeks:
+                for sess in w.sessions:
+                    if sess.garmin_workout_id is not None and sess.date >= day:
+                        plan.stale_garmin_workout_ids.append(sess.garmin_workout_id)
+                        sess.garmin_workout_id = None
+                        sess.garmin_scheduled = False
+            old.superseded_by = plan.id
+            changed.append(old)
+        return changed
 
     # -- 1. set_race_goal -----------------------------------------------------------------
     @app.tool(
@@ -359,9 +388,17 @@ def register_coach_tools(
                 plan = build_plan(goal, baseline, start)
             except ValueError as exc:
                 raise InvalidRequestError(str(exc), remediation="Check the goal dates.") from exc
+            superseded = supersede_older_plans(goal.id, plan, day)
             store.save_plan(plan)
+            for old in superseded:
+                store.save_plan(old)
         except GarminMCPError as exc:
             raise fail(exc) from exc
+        if plan.stale_garmin_workout_ids:
+            plan.warnings.append(
+                f"{len(plan.stale_garmin_workout_ids)} workout(s) pushed from the previous plan "
+                "will be removed from Garmin by the next push_plan_to_garmin."
+            )
         return PlanResult(
             plan_id=plan.id,
             goal_id=goal.id,
@@ -446,15 +483,34 @@ def register_coach_tools(
         changes: Annotated[list[PlanChange], Field(min_length=1, max_length=20)],
         plan_id: PlanId = None,
         dry_run: bool = False,
+        expected_revision: Annotated[
+            int | None,
+            Field(
+                ge=1,
+                description="Plan revision the changes were based on (e.g. from "
+                "review_week); the update is refused if the plan changed since.",
+            ),
+        ] = None,
     ) -> UpdateResult:
         try:
             plan, goal = load_plan(plan_id)
+            if expected_revision is not None and expected_revision != plan.revision:
+                raise InvalidRequestError(
+                    f"The plan is at revision {plan.revision}, not {expected_revision}: it "
+                    "changed since these changes were prepared. Nothing was applied.",
+                    remediation="Review the current plan (or run review_week again) and retry.",
+                )
+            if plan.superseded_by:
+                raise InvalidRequestError(
+                    f"Plan {plan.id} was replaced by {plan.superseded_by}.",
+                    remediation="Update the current plan instead (omit plan_id).",
+                )
             baseline = None
             if any(isinstance(c, RegenerateFrom) for c in changes):
                 try:
                     baseline = build_profile(12, with_recovery=False)[0].baseline
                 except GarminMCPError:
-                    baseline = None  # fall back to the plan's stored baseline
+                    baseline = None  # fall back to the plan's own volume (see updates.py)
             new, applied = apply_changes(
                 plan, goal, list(changes), today=today(), now=now(), baseline=baseline
             )
@@ -469,7 +525,7 @@ def register_coach_tools(
         ]
         if baseline is None and any(isinstance(c, RegenerateFrom) for c in changes):
             lines.append(
-                "- note: Garmin history unavailable; regenerated with the stored baseline."
+                "- note: Garmin history unavailable; regenerated from the plan's own volume."
             )
         if stale:
             lines.append(
@@ -504,6 +560,10 @@ def register_coach_tools(
     ) -> ExportResult:
         try:
             plan, goal = load_plan(plan_id)
+            if from_date and to_date and from_date > to_date:
+                raise InvalidRequestError(
+                    "from_date is after to_date.", remediation="Swap or fix the dates."
+                )
         except GarminMCPError as exc:
             raise fail(exc) from exc
         sessions = select_sessions(plan, from_date, to_date)
@@ -512,16 +572,25 @@ def register_coach_tools(
             payload = to_markdown(plan, goal).encode()
             content = payload.decode()
         elif format == "ics":
-            payload = to_ics(plan, goal, from_date, to_date).encode()
+            payload = to_ics(plan, goal, from_date, to_date, stamp_at=now()).encode()
             content = payload.decode()
         else:
             payload, _count = to_fit_zip(plan, goal, from_date, to_date)
         ext = "zip" if format == "fit" else format
         out_dir = store.root / "exports"
-        out_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         path: Path = out_dir / f"{plan.id}-r{plan.revision}.{ext}"
-        path.write_bytes(payload)
-        path.chmod(0o600)
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            path.write_bytes(payload)
+            path.chmod(0o600)
+        except OSError as exc:
+            raise fail(
+                ConfigurationError(
+                    f"Cannot write the export file {path}.",
+                    remediation="Check free space and permissions of GARMIN_COACH_DATA_DIR.",
+                    cause=exc,
+                )
+            ) from exc
         if content is not None and len(content) > INLINE_EXPORT_LIMIT:
             content = None
         return ExportResult(
@@ -545,9 +614,9 @@ def register_coach_tools(
         description=(
             "Create and schedule the plan's next sessions as structured Garmin workouts (pace "
             "targets when known). Defaults to dry_run=true: show the list to the athlete, then "
-            "call again with dry_run=false and expected_count = number to create. Replaces "
-            "workouts made obsolete by plan updates. Needs Garmin write access (off by "
-            "default); otherwise use export_plan format=fit."
+            "call again with dry_run=false, expected_count = workouts to send (create + "
+            "re-schedule) and expected_delete_count = obsolete workouts to delete. Needs "
+            "Garmin write access (off by default); otherwise use export_plan format=fit."
         ),
         annotations=GARMIN_WRITE,
         structured_output=True,
@@ -557,26 +626,68 @@ def register_coach_tools(
         from_date: dt.date | None = None,
         weeks: Annotated[int, Field(ge=1, le=4, description="How many weeks to send.")] = 2,
         dry_run: bool = True,
-        expected_count: Annotated[int | None, Field(ge=0, le=40)] = None,
+        expected_count: Annotated[int | None, Field(ge=0, le=60)] = None,
+        expected_delete_count: Annotated[int | None, Field(ge=0, le=500)] = None,
+        retry_uncertain: Annotated[
+            bool,
+            Field(
+                description="Re-create sessions whose earlier create was interrupted, after "
+                "checking in Garmin Connect that the workout does not exist."
+            ),
+        ] = False,
     ) -> PushResult:
         day = today()
         start = max(from_date or day, day)
         end = start + dt.timedelta(days=7 * weeks - 1)
         try:
             plan, goal = load_plan(plan_id)
+            if plan.superseded_by:
+                raise InvalidRequestError(
+                    f"Plan {plan.id} was replaced by {plan.superseded_by}.",
+                    remediation="Push the current plan (omit plan_id).",
+                )
         except GarminMCPError as exc:
             raise fail(exc) from exc
-        todo = [
+        window = [
+            (w, s) for w, s in select_sessions(plan, start, end) if s.kind is not SessionKind.RACE
+        ]
+        uncertain = [s for _w, s in window if s.garmin_push_pending]
+        create = [
             (w, s)
-            for w, s in select_sessions(plan, start, end)
-            if s.kind is not SessionKind.RACE and s.garmin_workout_id is None
+            for w, s in window
+            if s.garmin_workout_id is None and (not s.garmin_push_pending or retry_uncertain)
+        ]
+        schedule = [
+            (w, s) for w, s in window if s.garmin_workout_id is not None and not s.garmin_scheduled
         ]
         stale = list(plan.stale_garmin_workout_ids)
-        listing = [f"- {s.date} {workout_name(s, w)}" for w, s in todo]
+        to_send = len(create) + len(schedule)
+        listing = [f"- create {s.date} {workout_name(s, w)}" for w, s in create]
+        listing += [
+            f"- schedule {s.date} {workout_name(s, w)} (already created)" for w, s in schedule
+        ]
+        listing += [
+            f"- UNCERTAIN {s.date}: an earlier create was interrupted; check Garmin Connect "
+            "for this workout before retrying with retry_uncertain=true"
+            for s in uncertain
+            if not retry_uncertain
+        ]
+        base = PushResult(
+            plan_id=plan.id,
+            dry_run=dry_run,
+            to_create=len(create),
+            to_schedule=len(schedule),
+            to_delete=len(stale),
+            uncertain=[s.date for s in uncertain],
+            text="",
+        )
         if dry_run:
             can_write = router.can(Capability.WORKOUT_CREATE)
-            text = "\n".join(
-                [f"Dry run: {len(todo)} workout(s) to create, {len(stale)} obsolete to delete."]
+            base.text = "\n".join(
+                [
+                    f"Dry run: {to_send} workout(s) to send ({len(create)} create, "
+                    f"{len(schedule)} schedule), {len(stale)} obsolete to delete."
+                ]
                 + listing
                 + (
                     []
@@ -587,70 +698,96 @@ def register_coach_tools(
                     ]
                 )
             )
-            return PushResult(
-                plan_id=plan.id, dry_run=True, to_create=len(todo), to_delete=len(stale), text=text
-            )
-        if expected_count != len(todo):
+            return base
+        if expected_count != to_send or (stale and expected_delete_count != len(stale)):
             raise fail(
                 InvalidRequestError(
-                    f"{len(todo)} workout(s) would be created, expected_count is "
-                    f"{expected_count}. Nothing was sent.",
-                    remediation="Run with dry_run=true, confirm with the athlete, then pass "
-                    "expected_count equal to the number listed.",
+                    f"This push would send {to_send} workout(s) and delete {len(stale)}; got "
+                    f"expected_count={expected_count}, expected_delete_count="
+                    f"{expected_delete_count}. Nothing was sent.",
+                    remediation="Run with dry_run=true, confirm with the athlete, then pass the "
+                    "listed counts.",
                 )
             )
         try:
             writer = router.select(Capability.WORKOUT_CREATE, Capability.WORKOUT_SCHEDULE)
             deleter = router.select(Capability.WORKOUT_DELETE) if stale else None
+            result = base
+            for wid in stale:
+                try:
+                    if deleter is not None:
+                        deleter.delete_workout(wid)
+                    result.deleted.append(wid)
+                except NotFoundError:
+                    result.deleted.append(wid)  # already gone
+                except GarminMCPError:
+                    continue
+            plan.stale_garmin_workout_ids = [w for w in stale if w not in result.deleted]
+            store.save_plan(plan)
+
+            jobs = [(w, s, True) for w, s in create] + [(w, s, False) for w, s in schedule]
+            for i, (week_index, s, needs_create) in enumerate(jobs):
+                name = workout_name(s, week_index)
+                try:
+                    if needs_create:
+                        steps = session_steps(s, plan.easy_pace, goal.race_pace_s_per_km)
+                        minutes = s.est_duration_min or max(20, round(s.distance_km * 7))
+                        # Mark before calling Garmin: a crash in between leaves an "uncertain"
+                        # session instead of a silent duplicate on the next push.
+                        s.garmin_push_pending = True
+                        store.save_plan(plan)
+                        created = writer.create_running_workout(
+                            build_running_workout(name, steps, minutes * 60)
+                        )
+                        new_id = created.get("workoutId")
+                        if not isinstance(new_id, int):
+                            missing = UpstreamServiceError(
+                                "Garmin returned no workoutId: the workout may exist without "
+                                "being recorded.",
+                                remediation="Check Garmin Connect before retrying.",
+                            )
+                            missing.retryable = False
+                            raise missing
+                        s.garmin_workout_id = new_id
+                        s.garmin_push_pending = False
+                        store.save_plan(plan)
+                    assert s.garmin_workout_id is not None
+                    writer.schedule_workout(s.garmin_workout_id, s.date)
+                    s.garmin_scheduled = True
+                    store.save_plan(plan)
+                    result.created.append(
+                        PushEntry(date=s.date, name=name, workout_id=s.garmin_workout_id, ok=True)
+                    )
+                except GarminMCPError as exc:
+                    if (
+                        needs_create
+                        and s.garmin_workout_id is None
+                        and not isinstance(exc, UpstreamServiceError)
+                    ):
+                        # Refused outright (4xx, auth, rate limit): nothing was created.
+                        s.garmin_push_pending = False
+                        store.save_plan(plan)
+                    note = (
+                        " (created but not scheduled: the next push schedules it)"
+                        if s.garmin_workout_id is not None and not s.garmin_scheduled
+                        else ""
+                    )
+                    result.created.append(
+                        PushEntry(
+                            date=s.date,
+                            name=name,
+                            workout_id=s.garmin_workout_id,
+                            ok=False,
+                            error=f"{exc}{note}",
+                        )
+                    )
+                if i < len(jobs) - 1:
+                    sleep(0.5)
         except GarminMCPError as exc:
             raise fail(exc) from exc
-
-        result = PushResult(
-            plan_id=plan.id, dry_run=False, to_create=len(todo), to_delete=len(stale), text=""
-        )
-        for wid in stale:
-            try:
-                assert deleter is not None
-                deleter.delete_workout(wid)
-                result.deleted.append(wid)
-            except NotFoundError:
-                result.deleted.append(wid)  # already gone
-            except GarminMCPError:
-                continue
-        plan.stale_garmin_workout_ids = [w for w in stale if w not in result.deleted]
-        store.save_plan(plan)
-        for i, (week_index, s) in enumerate(todo):
-            name = workout_name(s, week_index)
-            try:
-                steps = session_steps(s, plan.easy_pace, goal.race_pace_s_per_km)
-                minutes = s.est_duration_min or max(20, round(s.distance_km * 7))
-                created = writer.create_running_workout(
-                    build_running_workout(name, steps, minutes * 60)
-                )
-                new_id = created.get("workoutId")
-                if not isinstance(new_id, int):
-                    raise InvalidRequestError(
-                        "Garmin returned no workoutId.", remediation="Check get_workouts."
-                    )
-                s.garmin_workout_id = new_id
-                store.save_plan(plan)  # persist before scheduling: never create twice
-                writer.schedule_workout(new_id, s.date)
-                result.created.append(PushEntry(date=s.date, name=name, workout_id=new_id, ok=True))
-            except GarminMCPError as exc:
-                result.created.append(
-                    PushEntry(
-                        date=s.date,
-                        name=name,
-                        workout_id=s.garmin_workout_id,
-                        ok=False,
-                        error=str(exc),
-                    )
-                )
-            if i < len(todo) - 1:
-                sleep(0.5)
         ok = sum(e.ok for e in result.created)
         lines = [
-            f"Sent {ok}/{len(todo)} workout(s) to Garmin; deleted {len(result.deleted)} obsolete."
+            f"Sent {ok}/{len(jobs)} workout(s) to Garmin; deleted {len(result.deleted)} obsolete."
         ]
         lines += [f"  ✗ {e.date} {e.name}: {e.error}" for e in result.created if not e.ok]
         result.text = "\n".join(lines)

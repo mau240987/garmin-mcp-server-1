@@ -40,7 +40,13 @@ def to_markdown(plan: TrainingPlan, goal: RaceGoal) -> str:
 
 
 def _ics_escape(text: str) -> str:
-    return text.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+    return (
+        text.replace("\r", "")
+        .replace("\\", "\\\\")
+        .replace(";", "\\;")
+        .replace(",", "\\,")
+        .replace("\n", "\\n")
+    )
 
 
 def _fold(line: str) -> str:
@@ -64,8 +70,11 @@ def to_ics(
     goal: RaceGoal,
     start: dt.date | None = None,
     end: dt.date | None = None,
+    stamp_at: dt.datetime | None = None,
 ) -> str:
-    stamp = plan.created_at.astimezone(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+    """One all-day event per session. UID = plan + date and SEQUENCE = plan revision, so
+    re-importing a revised plan updates events; removed/moved sessions are CANCELLED."""
+    stamp = (stamp_at or plan.created_at).astimezone(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     name = goal.race_name or goal.race_type.value.replace("_", " ")
     lines = [
         "BEGIN:VCALENDAR",
@@ -89,6 +98,7 @@ def to_ics(
         lines += [
             "BEGIN:VEVENT",
             f"UID:{plan.id}-{s.date:%Y%m%d}@garmin-coach-mcp",
+            f"SEQUENCE:{plan.revision}",
             f"DTSTAMP:{stamp}",
             f"DTSTART;VALUE=DATE:{s.date:%Y%m%d}",
             f"DTEND;VALUE=DATE:{s.date + dt.timedelta(days=1):%Y%m%d}",
@@ -97,6 +107,20 @@ def to_ics(
             "TRANSP:TRANSPARENT",
             "END:VEVENT",
         ]
+    current = {s.date for _w, s in select_sessions(plan, None, None)}
+    for day in sorted(set(plan.cancelled_dates) - current):
+        if (start is None or day >= start) and (end is None or day <= end):
+            lines += [
+                "BEGIN:VEVENT",
+                f"UID:{plan.id}-{day:%Y%m%d}@garmin-coach-mcp",
+                f"SEQUENCE:{plan.revision}",
+                f"DTSTAMP:{stamp}",
+                f"DTSTART;VALUE=DATE:{day:%Y%m%d}",
+                f"DTEND;VALUE=DATE:{day + dt.timedelta(days=1):%Y%m%d}",
+                "SUMMARY:Cancelled session",
+                "STATUS:CANCELLED",
+                "END:VEVENT",
+            ]
     lines.append("END:VCALENDAR")
     return "\r\n".join(_fold(line) for line in lines) + "\r\n"
 
@@ -104,7 +128,12 @@ def to_ics(
 # --------------------------------------------------------------------------------- FIT
 
 
-def _fit_workout(name: str, steps: list[WorkoutStep | RepeatStep], created: dt.datetime) -> bytes:
+def _fit_workout(
+    name: str,
+    steps: list[WorkoutStep | RepeatStep],
+    created: dt.datetime,
+    description: str | None = None,
+) -> bytes:
     from fit_tool.fit_file_builder import FitFileBuilder
     from fit_tool.profile.messages.file_id_message import FileIdMessage
     from fit_tool.profile.messages.workout_message import WorkoutMessage
@@ -175,6 +204,8 @@ def _fit_workout(name: str, steps: list[WorkoutStep | RepeatStep], created: dt.d
     workout.sport = Sport.RUNNING
     workout.workout_name = name
     workout.num_valid_steps = len(messages)
+    if description:
+        workout.workout_description = description[:120]
 
     builder = FitFileBuilder(auto_define=True, min_string_size=50)
     builder.add(file_id)
@@ -201,7 +232,8 @@ def to_fit_zip(
                 continue
             steps = session_steps(s, plan.easy_pace, goal.race_pace_s_per_km)
             name = workout_name(s, week)
-            data = _fit_workout(name, steps, plan.created_at)
+            # Each FIT file travels alone once imported: attribution inside it (Brand Guidelines).
+            data = _fit_workout(name, steps, plan.created_at, plan.attribution)
             info = zipfile.ZipInfo(f"{s.date:%Y-%m-%d}_{s.kind.value}.fit")
             info.date_time = (*plan.created_at.timetuple()[:6],)  # deterministic archive
             info.compress_type = zipfile.ZIP_DEFLATED

@@ -150,6 +150,12 @@ def review_week(
     if recovery and recovery.signals:
         review.alerts.extend(recovery.signals)
 
+    # Volume-based suggestions only once the week is over: a few days are not a week.
+    week_complete = today >= week.start_date + dt.timedelta(days=6)
+    if not week_complete and adherence is not None and adherence < LOW_ADHERENCE:
+        review.suggestions.append(
+            "The week is not over yet: review it again after Sunday before changing next week."
+        )
     nxt = next((w for w in plan.weeks if w.index == week.index + 1), None)
     if nxt is not None and nxt.phase is not Phase.TAPER:
         quality = [
@@ -165,7 +171,9 @@ def review_week(
                 "Several recovery signals are off: reduce next week by 20% and make it all easy. "
                 "If you feel ill or have pain, rest and consider seeing a doctor."
             )
-        elif adherence is not None and adherence < LOW_ADHERENCE and nxt.target_km:
+        elif (
+            week_complete and adherence is not None and adherence < LOW_ADHERENCE and nxt.target_km
+        ):
             factor = max(0.5, min(1.0, round(actual_to_date * 1.1 / nxt.target_km, 2)))
             if factor < 1.0:
                 review.suggested_changes.append(ScaleWeek(week=nxt.index, factor=factor))

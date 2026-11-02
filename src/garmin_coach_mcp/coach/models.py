@@ -187,6 +187,13 @@ class PlannedSession(_Model):
     garmin_workout_id: int | None = Field(
         default=None, description="Set once the session was pushed to Garmin Connect."
     )
+    garmin_scheduled: bool = Field(
+        default=False, description="The pushed workout is on the Garmin calendar."
+    )
+    garmin_push_pending: bool = Field(
+        default=False,
+        description="A create was started but not confirmed: check Garmin before retrying.",
+    )
 
 
 class PlanWeek(_Model):
@@ -225,6 +232,13 @@ class TrainingPlan(_Model):
     stale_garmin_workout_ids: list[int] = Field(
         default_factory=list,
         description="Garmin workouts made obsolete by plan updates; removed on the next push.",
+    )
+    superseded_by: str | None = Field(
+        default=None, description="Id of the plan that replaced this one for the same goal."
+    )
+    cancelled_dates: list[dt.date] = Field(
+        default_factory=list,
+        description="Dates whose session was removed or moved (cancelled in calendar exports).",
     )
 
     @property

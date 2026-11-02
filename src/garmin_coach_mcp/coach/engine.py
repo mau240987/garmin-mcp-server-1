@@ -144,11 +144,11 @@ def _monday(d: dt.date) -> dt.date:
     return d - dt.timedelta(days=d.weekday())
 
 
-def _phase_layout(n_weeks: int, taper: int) -> list[Phase]:
+def _phase_layout(n_weeks: int, taper: int, include_base: bool = True) -> list[Phase]:
     pre = n_weeks - taper
     if pre <= 0:
         return [Phase.TAPER] * n_weeks
-    base = math.floor(pre * 0.40) if pre >= 4 else 0
+    base = math.floor(pre * 0.40) if pre >= 4 and include_base else 0
     build = max(1, round(pre * 0.35)) if pre >= 2 else 0
     specific = pre - base - build
     if specific < 1:
@@ -425,8 +425,14 @@ def build_plan(
     goal: RaceGoal,
     baseline: AthleteBaseline,
     start_date: dt.date,
+    *,
+    include_base: bool = True,
 ) -> TrainingPlan:
-    """Generate a plan from `start_date` (inclusive) to the race. Pure function."""
+    """Generate a plan from `start_date` (inclusive) to the race. Pure function.
+
+    include_base=False continues an existing plan (regeneration) without restarting from the
+    base phase.
+    """
     if goal.race_date <= start_date:
         raise ValueError("race_date must be after start_date")
     dclass = _distance_class(goal.distance_km)
@@ -448,7 +454,7 @@ def build_plan(
     taper = min(TAPER_WEEKS[dclass], max(1, n_weeks // 4)) if n_weeks > 1 else 1
     if goal.race_date.weekday() <= 2 and n_weeks > taper + 1:
         taper += 1  # race early in the week: the week before must already be lighter (R5)
-    phases = _phase_layout(n_weeks, taper)
+    phases = _phase_layout(n_weeks, taper, include_base)
     pre_taper = n_weeks - taper
 
     peak_target = PEAK_KM[dclass][level]
