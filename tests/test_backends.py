@@ -423,15 +423,25 @@ def test_router_unofficial_reads_are_opt_in(
 def test_router_writes_need_a_writer(
     official: OfficialPersonalBackend, unofficial: UnofficialBackend
 ) -> None:
-    assert BackendRouter([official, unofficial]).select(Capability.WORKOUT_CREATE) is unofficial
+    enabled = BackendRouter([official, unofficial], allow_unofficial_writes=True)
+    assert enabled.select(Capability.WORKOUT_CREATE) is unofficial
+    with pytest.raises(CapabilityUnavailableError) as off:
+        BackendRouter([official, unofficial]).select(Capability.WORKOUT_CREATE)
+    assert "GARMIN_ALLOW_UNOFFICIAL_WRITES=true" in str(off.value)
     with pytest.raises(CapabilityUnavailableError) as info:
         BackendRouter([official]).select(Capability.WORKOUT_CREATE)
-    assert "Training API" in str(info.value)
+    assert "Training API" in str(info.value) and "GARMIN_EMAIL" in str(info.value)
 
 
-def test_router_unofficial_only_keeps_legacy_behaviour(unofficial: UnofficialBackend) -> None:
+def test_router_unofficial_only(unofficial: UnofficialBackend) -> None:
+    from garmin_coach_mcp.backends import WRITE_CAPABILITIES
+
+    reads = [c for c in Capability if c not in WRITE_CAPABILITIES]
     router = BackendRouter([unofficial])
-    assert all(router.select(cap) is unofficial for cap in Capability)
+    assert all(router.select(cap) is unofficial for cap in reads)
+    assert not any(router.can(cap) for cap in WRITE_CAPABILITIES)  # A3: off by default
+    enabled = BackendRouter([unofficial], allow_unofficial_writes=True)
+    assert all(enabled.select(cap) is unofficial for cap in Capability)
 
 
 def test_build_router_from_settings(tmp_path: Path) -> None:
@@ -635,3 +645,57 @@ def test_jwt_without_usable_exp_falls_back_to_24h(
     clock[0] += 3600 * 12
     official.daily_summary(DAY)
     assert transport.count("POST", TOKEN_PATH) == 1
+
+
+# ------------------------------------------------------------------ A4: Starter stub
+
+
+def test_starter_stub_is_never_selected(unofficial: UnofficialBackend) -> None:
+    from garmin_coach_mcp.backends.official_starter import OfficialStarterBackend
+
+    starter = OfficialStarterBackend()
+    assert starter.capabilities() == frozenset()
+    router = BackendRouter([starter, unofficial], allow_unofficial_writes=True)
+    assert router.select(Capability.WORKOUT_CREATE) is unofficial
+    with pytest.raises(CapabilityUnavailableError):
+        starter.create_running_workout(object())
+
+
+def test_starter_takes_writes_once_it_declares_them(
+    official: OfficialPersonalBackend, unofficial: UnofficialBackend
+) -> None:
+    """The seam: a Starter backend that declares writes wins over the unofficial one."""
+    from garmin_coach_mcp.backends.official_starter import (
+        PLANNED_CAPABILITIES,
+        OfficialStarterBackend,
+    )
+
+    class ReadyStarter(OfficialStarterBackend):
+        def capabilities(self) -> frozenset[Capability]:
+            return PLANNED_CAPABILITIES
+
+    starter = ReadyStarter()
+    router = BackendRouter([official, unofficial, starter], allow_unofficial_writes=True)
+    for cap in PLANNED_CAPABILITIES:
+        assert router.select(cap) is starter
+    assert router.select(Capability.DAILY_SUMMARY) is official  # reads stay on Personal
+    # Official writes need no unofficial opt-in.
+    assert BackendRouter([official, starter]).select(Capability.WORKOUT_CREATE) is starter
+
+
+def test_starter_credentials_repr_hides_secrets() -> None:
+    from garmin_coach_mcp.backends.official_starter import StarterCredentials
+
+    creds = StarterCredentials("abcd1234", "secret-SENTINEL", "token-SENTINEL")
+    assert "SENTINEL" not in repr(creds) and "1234" not in repr(creds)
+
+
+def test_write_flag_from_env(tmp_path: Path) -> None:
+    env = {
+        "GARMIN_TOKEN_DIR": str(tmp_path / "t"),
+        "GARMIN_EMAIL": "a@b.invalid",
+        "GARMIN_PASSWORD": "p",
+    }
+    assert not build_router(Settings.from_env(env)).allow_unofficial_writes
+    on = build_router(Settings.from_env({**env, "GARMIN_ALLOW_UNOFFICIAL_WRITES": "true"}))
+    assert on.allow_unofficial_writes and on.can(Capability.WORKOUT_CREATE)

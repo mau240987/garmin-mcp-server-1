@@ -10,8 +10,8 @@ notes predate MCP SDK 2.3 (snake_case `ToolAnnotations`, `mcp.server.mcpserver`)
 | H | Hardening P1–P8 | **Done** | See below. |
 | A1 | `GarminBackend` protocol + capability router | **Done** | `backends/base.py`, `backends/router.py`; 9 tools refactored; the 83 pre-existing tests pass unchanged through the router. |
 | A2 | `OfficialPersonalBackend` | **Done — verified on the real API** (2026-11-02, owner's machine) | Token = plain-text JWT, `Bearer` confirmed, all used endpoints 200 with expected fields. See `docs/api-coverage.md` §1.2. |
-| A3 | `UnofficialBackend` + `GARMIN_ALLOW_UNOFFICIAL_WRITES` | Partial | `UnofficialBackend` exists (A1); the write flag is not implemented yet. |
-| A4 | `OfficialStarterBackend` stub + requirements | Not started | |
+| A3 | `UnofficialBackend` + `GARMIN_ALLOW_UNOFFICIAL_WRITES` | **Done** | Writes off by default in every configuration (behaviour change, documented in README); nothing reaches Garmin when disabled. |
+| A4 | `OfficialStarterBackend` stub + requirements | **Done (stub)** | Declares no capabilities; router prefers it for writes once it does (tested). Requirements: `docs/starter-requirements.md`. |
 | C1–C4 | Goal/plan model, plan engine, new tools, export | Not started | |
 | S1–S2 | Claude skill/plugin, ChatGPT/Gemini instructions | Not started | |
 | V | Independent review + E2E | Partial | Review of H done by a separate agent; all findings fixed (see below). E2E pending later pieces. |

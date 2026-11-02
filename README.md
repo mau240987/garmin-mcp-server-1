@@ -68,14 +68,23 @@ python3 -m venv .venv && .venv/bin/pip install .
 | `GARMIN_PERSONAL_API_KEY_EXPIRES` | — | Expiry date you chose for the key (`YYYY-MM-DD`); tools warn 14 days ahead. |
 | `GARMIN_PERSONAL_API_REGION` | `global` | `cn` for Garmin China accounts. |
 | `GARMIN_ALLOW_UNOFFICIAL_READS` | `false` | With a Personal key: let reads the official API lacks (Training Readiness, workout library) use the unofficial backend. |
+| `GARMIN_ALLOW_UNOFFICIAL_WRITES` | `false` | Enable workout create/schedule/delete through the unofficial backend. **Off by default.** |
+
+> **Behaviour change (2.0):** workout writes (`push_workout`, `push_training_plan`,
+> `delete_workout`, `delete_plan_workouts`) are now **disabled by default**, also for existing
+> email/password setups. They go through Garmin Connect's internal endpoints with your
+> credentials, which may breach Garmin's terms and put the account at risk (see
+> [`docs/api-coverage.md`](docs/api-coverage.md), risk R4). To keep using them, set
+> `GARMIN_ALLOW_UNOFFICIAL_WRITES=true`. Garmin's official Training API needs a business
+> (Starter) account: see [`docs/starter-requirements.md`](docs/starter-requirements.md).
 
 ### Backends: official first
 
 | Configuration | Reads | Writes (`push_*`, `delete_*`) |
 |---|---|---|
-| Only `GARMIN_EMAIL`/`GARMIN_PASSWORD` (or saved tokens) | unofficial (as before) | unofficial |
+| Only `GARMIN_EMAIL`/`GARMIN_PASSWORD` (or saved tokens) | unofficial (as before) | unofficial **only with** `GARMIN_ALLOW_UNOFFICIAL_WRITES=true` |
 | Only `GARMIN_PERSONAL_API_KEY` | **official**; Training Readiness and `get_workouts` unavailable (explained in the result) | unavailable, with guidance |
-| Both | **official**; the missing ones only with `GARMIN_ALLOW_UNOFFICIAL_READS=true` | unofficial |
+| Both | **official**; the missing ones only with `GARMIN_ALLOW_UNOFFICIAL_READS=true` | unofficial **only with** `GARMIN_ALLOW_UNOFFICIAL_WRITES=true` |
 
 Data served by the official API carries a `sources` entry with Garmin attribution. The
 Personal API is read-only and for your own data only; create the key in Garmin Connect Web

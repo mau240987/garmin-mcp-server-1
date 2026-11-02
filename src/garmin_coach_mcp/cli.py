@@ -65,6 +65,7 @@ def build_router(settings: Settings) -> BackendRouter:
     return BackendRouter(
         backends,
         allow_unofficial_reads=settings.allow_unofficial_reads,
+        allow_unofficial_writes=settings.allow_unofficial_writes,
         notices=official.notices if official else None,
     )
 
@@ -92,6 +93,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings.read_only,
         ",".join(b.name for b in router.backends),
     )
+    if router.allow_unofficial_writes and router.has_unofficial:
+        log.warning(
+            "Unofficial workout writes are ENABLED (GARMIN_ALLOW_UNOFFICIAL_WRITES=true): they use "
+            "Garmin Connect's internal endpoints with your credentials (see docs, risk R4)."
+        )
+    elif not settings.read_only:
+        log.info("Workout writes are disabled; set GARMIN_ALLOW_UNOFFICIAL_WRITES=true to enable.")
     if args.transport == "stdio":
         app.run(transport="stdio")
     else:

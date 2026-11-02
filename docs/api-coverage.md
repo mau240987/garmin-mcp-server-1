@@ -199,8 +199,10 @@ Alternative considerate:
   (`src/garmin_coach_mcp/backends/router.py`) e `OfficialPersonalBackend`.
 - Domanda 2 (fallback Training Readiness): applicato il default proposto, **opt-in** con
   `GARMIN_ALLOW_UNOFFICIAL_READS=true`, in attesa di conferma.
-- Scritture: restano sul backend non ufficiale quando configurato; il flag
-  `GARMIN_ALLOW_UNOFFICIAL_WRITES` (off di default) arriva con A3.
+- Scritture (A3, implementato): solo con `GARMIN_ALLOW_UNOFFICIAL_WRITES=true`, **disattivate
+  di default** in ogni configurazione; altrimenti errore strutturato con indicazioni.
+- Starter (A4): stub e requisiti in `docs/starter-requirements.md`; il router lo preferirà per
+  le scritture appena dichiarerà le capacità.
 
 ### Domande ancora aperte
 

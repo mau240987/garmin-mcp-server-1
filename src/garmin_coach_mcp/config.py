@@ -68,6 +68,9 @@ class Settings:
     #: Let reads the official API cannot serve (e.g. Training Readiness) fall back to the
     #: unofficial backend. Off by default (strategy A, docs/api-coverage.md §7).
     allow_unofficial_reads: bool = False
+    #: Let workout create/schedule/delete use the unofficial backend. Off by default (A3):
+    #: unofficial access may breach Garmin's terms and risks the account (docs, risk R4).
+    allow_unofficial_writes: bool = False
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None, **overrides: Any) -> Settings:
@@ -113,6 +116,11 @@ class Settings:
             personal_api_region=region,
             allow_unofficial_reads=_parse_bool(
                 "GARMIN_ALLOW_UNOFFICIAL_READS", source.get("GARMIN_ALLOW_UNOFFICIAL_READS"), False
+            ),
+            allow_unofficial_writes=_parse_bool(
+                "GARMIN_ALLOW_UNOFFICIAL_WRITES",
+                source.get("GARMIN_ALLOW_UNOFFICIAL_WRITES"),
+                False,
             ),
         )
         clean = {k: v for k, v in overrides.items() if v is not None}

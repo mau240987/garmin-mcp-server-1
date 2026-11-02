@@ -50,7 +50,8 @@ STEPS = [
 
 @pytest.fixture
 def app(make_session: Callable[..., GarminSession]) -> MCPServer:
-    router = BackendRouter([UnofficialBackend(make_session())])
+    # Writes explicitly enabled: these tests exercise the write tools' behaviour.
+    router = BackendRouter([UnofficialBackend(make_session())], allow_unofficial_writes=True)
     return build_server(router, sleep=lambda _s: None)
 
 
@@ -349,3 +350,45 @@ def test_legacy_entrypoint_importable() -> None:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert callable(module.main)
+
+
+# ------------------------------------------------------------- A3: writes off by default
+
+
+@pytest.mark.parametrize(
+    ("name", "args"),
+    [
+        ("push_workout", {"name": "x", "steps": STEPS}),
+        (
+            "push_training_plan",
+            {
+                "name": "P",
+                "start_date": "2026-11-02",
+                "workouts": [{"day_offset": 0, "name": "a", "steps": STEPS}],
+            },
+        ),
+        ("delete_workout", {"workout_id": "13"}),
+        (
+            "delete_plan_workouts",
+            {"name_contains": "plan-a", "dry_run": False, "expected_count": 2},
+        ),
+    ],
+)
+def test_unofficial_writes_disabled_by_default(
+    make_session: Callable[..., GarminSession], fake: FakeGarmin, name: str, args: dict[str, Any]
+) -> None:
+    app = build_server(BackendRouter([UnofficialBackend(make_session())]), sleep=lambda _s: None)
+    with pytest.raises(ToolError) as info:
+        anyio.run(app.call_tool, name, args)
+    assert "GARMIN_ALLOW_UNOFFICIAL_WRITES=true" in str(info.value)
+    assert fake.calls == []  # not even a login: nothing reached Garmin
+
+
+def test_reads_still_work_with_writes_disabled(
+    make_session: Callable[..., GarminSession],
+) -> None:
+    app = build_server(BackendRouter([UnofficialBackend(make_session())]))
+    assert call(app, "get_workouts", {})["count"] == 3
+    # dry run of the bulk delete only lists, but deleting is impossible: fail before listing
+    with pytest.raises(ToolError):
+        anyio.run(app.call_tool, "delete_plan_workouts", {"name_contains": "plan-a"})
