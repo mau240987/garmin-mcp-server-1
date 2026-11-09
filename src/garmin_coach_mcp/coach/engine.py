@@ -301,7 +301,15 @@ def _session(
 ) -> PlannedSession:
     duration = round(km * easy_pace / 60) if easy_pace and km > 0 else None
     pace_hint = None
-    if easy_pace and kind in (SessionKind.EASY, SessionKind.LONG, SessionKind.MEDIUM_LONG):
+    # Easy pace for every session whose running is mostly easy (the strides and the fartlek's
+    # warm-up/cool-down too: their workout steps carry the same easy target).
+    if easy_pace and kind in (
+        SessionKind.EASY,
+        SessionKind.LONG,
+        SessionKind.MEDIUM_LONG,
+        SessionKind.STRIDES,
+        SessionKind.FARTLEK,
+    ):
         pace_hint = f"{format_pace(easy_pace)} - {format_pace(easy_pace + 30)} (easy)"
     return PlannedSession(
         date=date,
@@ -438,7 +446,10 @@ def _layout_week(
                 easy_pace=easy_pace,
                 threshold=threshold,
             )
-            sessions.append(_session(date, kind, q_km[slot], zone, desc, None))
+            mostly_easy = kind in (SessionKind.STRIDES, SessionKind.FARTLEK)
+            sessions.append(
+                _session(date, kind, q_km[slot], zone, desc, easy_pace if mostly_easy else None)
+            )
         elif d == medium_long_day:
             sessions.append(
                 _session(
@@ -485,7 +496,7 @@ def _race_week(
                     SessionKind.STRIDES if last else SessionKind.EASY,
                     per * (0.6 if last else 1.0),
                     "Z1-Z2",
-                    "Short easy run" + (" with 4x15 s strides." if last else "."),
+                    "Short easy run" + (" with 6x20 s relaxed strides." if last else "."),
                     easy_pace,
                 )
             )
