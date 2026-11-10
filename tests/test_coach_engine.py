@@ -658,3 +658,22 @@ def test_marathon_without_target_keeps_marathon_effort_finish() -> None:
         if s.kind is SessionKind.LONG
     ]
     assert longs and all("goal marathon effort" in s.description for s in longs)
+
+
+def test_strides_and_fartlek_show_the_easy_pace() -> None:
+    """Their workout steps target the easy pace: the calendar/plan text says so too."""
+    plan = build_plan(_paris_goal(), PARIS_LIKE, dt.date(2026, 11, 9))
+    for s in (s for w in plan.weeks for s in w.sessions):
+        if s.kind in (SessionKind.STRIDES, SessionKind.FARTLEK):
+            assert s.pace_hint and "(easy)" in s.pace_hint, s
+
+
+def test_race_week_strides_text_matches_the_workout_steps() -> None:
+    plan = build_plan(_paris_goal(), PARIS_LIKE, dt.date(2026, 11, 9))
+    strides = [s for s in plan.weeks[-1].sessions if s.kind is SessionKind.STRIDES]
+    assert strides
+    for s in strides:
+        reps = next(
+            st for st in session_steps(s, plan.easy_pace, None) if isinstance(st, RepeatStep)
+        )
+        assert f"{reps.repeat_count}x{reps.steps[0].duration_value} s" in s.description
