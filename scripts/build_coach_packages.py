@@ -82,7 +82,7 @@ def files() -> dict[Path, str]:
                 "adaptation (local MCP server + race-coach skill).",
                 "author": {"name": "garmin-coach-mcp contributors"},
                 "license": "AGPL-3.0-only",
-                "repository": "https://github.com/mrosano1987/garmin-mcp-server-1",
+                "repository": "https://github.com/mau240987/garmin-mcp-server-1",
                 "keywords": ["garmin", "running", "training-plan", "mcp"],
             },
             indent=2,
