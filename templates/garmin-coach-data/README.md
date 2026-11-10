@@ -19,3 +19,12 @@ Optional variable `GARMIN_COACH_REF`: the server branch, tag or commit to instal
 
 This uses the unofficial Garmin Connect access (see the server's `docs/api-coverage.md`, risk
 R4): Garmin may block logins from GitHub's servers; the dry run shows it.
+
+## Weekly coach, Coach preview, Telegram
+
+- *Weekly coach* (Monday 04:17 UTC): reviews last week, adapts the plan, prepares the week on
+  Garmin (sends it if the variable `GARMIN_AUTO_PUSH` is `true`) and opens an issue.
+- *Coach preview* (Sunday 18:43 UTC): Monday's check-in on a copy of the data, with what is
+  synced so far. Changes and sends nothing.
+- With the secrets `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, both send their summary on
+  Telegram (setup: the server's `docs/garmin-push-actions.md`).

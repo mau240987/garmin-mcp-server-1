@@ -205,3 +205,38 @@ def test_active_plan_follows_a_goal_reset_for_the_same_race(tmp_path: Path) -> N
     call(app, "set_race_goal", {**MARATHON, "days_per_week": 5})
     new = call(app, "generate_training_plan", {"start_date": "2026-11-16"})
     assert push_cli.active_plan_id(store, dt.date(2026, 11, 20)) == new["plan_id"]
+
+
+# Preview: next Monday's check-in on a copy of the data.
+
+
+def test_next_monday() -> None:
+    assert weekly_cli.next_monday(dt.date(2026, 11, 22)) == dt.date(2026, 11, 23)  # Sunday
+    assert weekly_cli.next_monday(dt.date(2026, 11, 23)) == dt.date(2026, 11, 30)  # Monday
+
+
+def test_preview_shows_the_adaptation_but_changes_and_sends_nothing(
+    env: tuple[Path, FakeGarminReads, FakeGarminWriter], tmp_path: Path
+) -> None:
+    data, reads, writer = env
+    _fatigue(reads)
+    _week1_runs(reads)
+    saved = {p: p.read_bytes() for p in data.rglob("*") if p.is_file()}
+    summary = tmp_path / "preview.md"
+    # Sunday of plan week 1: previews Monday 2026-11-23, which reviews week 1.
+    rc = weekly_cli.main(
+        ["--data-dir", str(data), "--today", "2026-11-22", "--preview", "--summary", str(summary)]
+    )
+    text = summary.read_text()
+    assert rc == 0, text
+    assert "preview of the week of 2026-11-23 (data as of 2026-11-22)" in text
+    assert "Week 1 (2026-11-16" in text and "Plan adapted" in text
+    assert "Monday's check-in sends these" in text and "Automatic push is off" not in text
+    assert {p: p.read_bytes() for p in data.rglob("*") if p.is_file()} == saved
+    assert writer.created == [] and writer.scheduled == [] and writer.deleted == []
+
+
+def test_preview_refuses_auto_push(env: tuple[Path, FakeGarminReads, FakeGarminWriter]) -> None:
+    data, _reads, _writer = env
+    with pytest.raises(SystemExit):
+        weekly_cli.main(["--data-dir", str(data), "--preview", "--auto-push"])

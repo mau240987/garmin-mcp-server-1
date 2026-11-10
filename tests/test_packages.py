@@ -189,3 +189,33 @@ def test_weekly_workflow_template_is_safe() -> None:
     checkin = next(s for s in steps if s.get("name") == "Weekly check-in")
     assert checkin["env"]["AUTO_PUSH"] == "${{ vars.GARMIN_AUTO_PUSH }}"
     assert '[ "$AUTO_PUSH" = "true" ]' in checkin["run"]
+
+
+def test_preview_workflow_template_never_writes() -> None:
+    """Coach preview: scheduled + manual, read-only token, never --auto-push, no commit or
+    issue; Telegram only through secrets passed as environment variables."""
+    import yaml
+
+    path = ROOT / "templates" / "garmin-coach-data" / ".github" / "workflows" / "coach-preview.yml"
+    wf = yaml.safe_load(path.read_text(encoding="utf-8"))
+    triggers = wf[True] if True in wf else wf["on"]
+    assert set(triggers) == {"schedule", "workflow_dispatch"}
+    assert wf["permissions"] == {"contents": "read"}
+    steps = wf["jobs"]["preview"]["steps"]
+    runs = "\n".join(s.get("run", "") for s in steps)
+    assert "${{" not in runs
+    assert "--preview" in runs and "--auto-push" not in runs
+    assert "git push" not in runs and "gh issue" not in runs
+    telegram = next(s for s in steps if "Telegram" in s.get("name", ""))
+    assert telegram["env"]["TELEGRAM_BOT_TOKEN"] == "${{ secrets.TELEGRAM_BOT_TOKEN }}"
+    assert telegram["continue-on-error"] is True
+
+
+def test_weekly_workflow_sends_telegram_without_failing_the_check_in() -> None:
+    import yaml
+
+    path = ROOT / "templates" / "garmin-coach-data" / ".github" / "workflows" / "weekly-coach.yml"
+    steps = yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"]["weekly"]["steps"]
+    telegram = next(s for s in steps if "Telegram" in s.get("name", ""))
+    assert telegram["continue-on-error"] is True and telegram["if"] == "${{ always() }}"
+    assert telegram["env"]["TELEGRAM_CHAT_ID"] == "${{ secrets.TELEGRAM_CHAT_ID }}"
