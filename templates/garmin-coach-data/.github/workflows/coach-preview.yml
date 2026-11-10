@@ -42,7 +42,8 @@ jobs:
           GARMIN_TOKEN_DIR: ${{ runner.temp }}/garmin-tokens
         run: |
           status=0
-          garmin-coach-weekly --data-dir . --preview --summary "$RUNNER_TEMP/preview.md" || status=$?
+          garmin-coach-weekly --data-dir . --preview --summary "$RUNNER_TEMP/preview.md" \
+            --digest "$RUNNER_TEMP/preview.json" || status=$?
           cat "$RUNNER_TEMP/preview.md" >> "$GITHUB_STEP_SUMMARY"
           exit $status
 
@@ -55,5 +56,6 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           if command -v garmin-coach-telegram >/dev/null; then
-            garmin-coach-telegram "$RUNNER_TEMP/preview.md" --footer "Run: $RUN_URL"
+            garmin-coach-telegram "$RUNNER_TEMP/preview.md" --digest "$RUNNER_TEMP/preview.json" \
+              --button-url "$RUN_URL"
           fi

@@ -240,3 +240,41 @@ def test_preview_refuses_auto_push(env: tuple[Path, FakeGarminReads, FakeGarminW
     data, _reads, _writer = env
     with pytest.raises(SystemExit):
         weekly_cli.main(["--data-dir", str(data), "--preview", "--auto-push"])
+
+
+def test_digest_records_the_run_for_notifications(
+    env: tuple[Path, FakeGarminReads, FakeGarminWriter], tmp_path: Path
+) -> None:
+    import json
+
+    data, reads, _writer = env
+    _fatigue(reads)
+    _week1_runs(reads)
+    digest = tmp_path / "w.json"
+    rc = weekly_cli.main(
+        ["--data-dir", str(data), "--today", MONDAY, "--auto-push", "--digest", str(digest)]
+    )
+    assert rc == 0
+    d = json.loads(digest.read_text())
+    assert d["mode"] == "check-in" and d["week_of"] == MONDAY and d["errors"] == []
+    assert d["goal"]["race_type"] == "marathon" and d["review"]["week_index"] == 1
+    assert d["adaptation"]["status"] == "applied" and d["adaptation"]["changes"]
+    assert d["week"]["index"] == 2 and d["week"]["sessions"]
+    assert all(s["date"] >= MONDAY for s in d["week"]["sessions"])
+    assert d["garmin"]["result"] == "sent" and d["garmin"]["to_send"] == len(d["week"]["sessions"])
+
+
+def test_preview_digest_is_marked_preview(
+    env: tuple[Path, FakeGarminReads, FakeGarminWriter], tmp_path: Path
+) -> None:
+    import json
+
+    data, _reads, _writer = env
+    digest = tmp_path / "p.json"
+    weekly_cli.main(
+        ["--data-dir", str(data), "--today", "2026-11-22", "--preview", "--digest", str(digest)]
+    )
+    d = json.loads(digest.read_text())
+    assert d["mode"] == "preview" and d["week_of"] == "2026-11-23" and d["as_of"] == "2026-11-22"
+    assert d["adaptation"]["status"] in ("none", "skipped:no_activity")
+    assert d["garmin"]["result"] == "dry_run"

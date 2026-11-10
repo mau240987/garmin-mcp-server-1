@@ -102,3 +102,168 @@ def test_refusal_fails_without_leaking_the_token(
     assert telegram_cli.main([str(report)], post=post) == 1
     out = capsys.readouterr()
     assert "HTTP 401" in out.err and "SECRET" not in out.err + out.out
+
+
+# Italian Telegram card from the weekly digest.
+
+DIGEST = {
+    "mode": "check-in",
+    "week_of": "2026-11-16",
+    "as_of": "2026-11-16",
+    "auto_push": True,
+    "errors": [],
+    "goal": {
+        "race_name": "Marathon de Paris",
+        "race_type": "marathon",
+        "race_date": "2027-04-04",
+        "target_time_s": 13920,
+    },
+    "review": {
+        "week_index": 1,
+        "week_start": "2026-11-09",
+        "phase": "base",
+        "planned_km_to_date": 35.0,
+        "actual_km_to_date": 30.5,
+        "sessions": [
+            {
+                "date": "2026-11-10",
+                "planned_kind": "easy",
+                "planned_km": 6.5,
+                "actual_km": 6.8,
+                "status": "done",
+                "too_hard": True,
+            },
+            {
+                "date": "2026-11-12",
+                "planned_kind": "easy",
+                "planned_km": 11.5,
+                "actual_km": 0,
+                "status": "missed",
+            },
+        ],
+        "extra_runs": [{"date": "2026-11-14", "km": 5.0}],
+        "recovery": {
+            "resting_hr": 58,
+            "resting_hr_7d_avg": 49,
+            "hrv_status": "LOW",
+            "signals": ["a", "b"],
+        },
+    },
+    "adaptation": {
+        "status": "applied",
+        "changes": [
+            {"op": "scale_week", "week": 2, "factor": 0.8},
+            {"op": "make_easy", "date": "2026-11-17"},
+        ],
+    },
+    "vdot_change": {"plan": 40.7, "now": 41.9, "source": "x"},
+    "week": {
+        "index": 2,
+        "phase": "build",
+        "target_km": 41.0,
+        "sessions": [
+            {
+                "date": "2026-11-17",
+                "kind": "tempo",
+                "km": 7.5,
+                "minutes": None,
+                "zone": "Z3",
+                "pace_hint": None,
+            },
+            {
+                "date": "2026-11-22",
+                "kind": "long",
+                "km": 20.0,
+                "minutes": 119,
+                "zone": "Z2",
+                "pace_hint": "6:02/km - 6:32/km (easy)",
+                "long_variant": "progressive",
+                "fast_km": 4,
+            },
+        ],
+    },
+    "garmin": {"to_send": 2, "to_delete": 0, "result": "sent"},
+}
+
+
+def test_digest_becomes_an_italian_card() -> None:
+    from garmin_coach_mcp.telegram_format import format_digest
+
+    out = format_digest(DIGEST)
+    assert out.startswith("🏃 <b>Check-in settimanale</b> · lun 16 nov")
+    assert (
+        "🏁 <b>Marathon de Paris</b> · dom 4 apr 2027 · tra <b>139</b> giorni · 🎯 3:52:00" in out
+    )
+    assert "✅ mar 10/11 · Corsa facile 6,5 km → <b>6,8 km</b> 🔥 troppo intensa" in out
+    assert "❌ gio 12/11 · Corsa facile 11,5 km → <b>0 km</b>" in out
+    assert "🆕 sab 14/11 · corsa extra 5 km" in out
+    assert "📏 <b>30,5</b> / 35 km" in out and "87%" in out
+    assert "⚠️ <b>2 segnali di affaticamento</b>" in out and "FC riposo 58 (media 49)" in out
+    assert "HRV bassa" in out
+    assert "📉 Settimana 2: volume -20%" in out and "😌 mar 17/11: diventa corsa facile" in out
+    assert "📈 <b>Livello in crescita</b>: VDOT 40,7 → <b>41,9</b>" in out
+    assert "🗓️ <b>Settimana 2</b> · fase costruzione · 41 km" in out
+    assert "🟠 <b>mar 17/11</b> · Tempo <b>7,5 km</b> · Z3" in out
+    assert (
+        "🔵 <b>dom 22/11</b> · Lungo progressivo (4 km veloci) <b>20 km</b> · ~119 min · "
+        "6:02/km-6:32/km" in out
+    )
+    assert "⌚ ✅ Inviati a Garmin: <b>2 allenamenti</b>" in out and "Buon allenamento" in out
+
+
+def test_preview_card_and_errors() -> None:
+    from garmin_coach_mcp.telegram_format import format_digest
+
+    d = {
+        **DIGEST,
+        "mode": "preview",
+        "week_of": "2026-11-23",
+        "as_of": "2026-11-22",
+        "adaptation": {"status": "skipped:no_activity", "changes": [{"op": "scale_week"}]},
+        "garmin": {"to_send": 1, "result": "dry_run"},
+        "errors": ["Garmin push: <boom>"],
+    }
+    out = format_digest(d)
+    assert out.startswith("🔮 <b>Anteprima della settimana</b> · da lun 23 nov")
+    assert "Dati fino a dom 22 nov" in out
+    assert "⏸️ Modifiche proposte non applicate: nessuna corsa trovata su Garmin" in out
+    assert "⌚ Lunedì su Garmin: <b>1 allenamento</b>" in out
+    assert "• Garmin push: &lt;boom&gt;" in out and "Buon allenamento" not in out
+
+
+def test_sends_the_digest_card_with_a_button(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
+    report, digest = tmp_path / "w.md", tmp_path / "w.json"
+    report.write_text("## English report")
+    digest.write_text(json.dumps(DIGEST))
+    sent: list[dict[str, object]] = []
+    rc = telegram_cli.main(
+        [str(report), "--digest", str(digest), "--button-url", "https://example.invalid/r"],
+        post=lambda u, d: sent.append(d),
+    )
+    assert rc == 0 and len(sent) == 1
+    assert str(sent[0]["text"]).startswith("🏃 <b>Check-in settimanale</b>")
+    assert sent[0]["reply_markup"] == {
+        "inline_keyboard": [[{"text": "📄 Report completo", "url": "https://example.invalid/r"}]]
+    }
+
+
+def test_unreadable_digest_falls_back_to_the_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
+    report, digest = tmp_path / "w.md", tmp_path / "w.json"
+    report.write_text("## English report")
+    digest.write_text("{not json")
+    sent: list[dict[str, object]] = []
+    assert (
+        telegram_cli.main([str(report), "--digest", str(digest)], post=lambda u, d: sent.append(d))
+        == 0
+    )
+    assert sent[0]["text"] == "<b>English report</b>"

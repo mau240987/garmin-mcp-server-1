@@ -1,9 +1,12 @@
-"""`garmin-coach-telegram`: send a coach report (Markdown) to a Telegram chat.
+"""`garmin-coach-telegram`: send a coach report to a Telegram chat.
 
 Reads the bot token and the chat id from TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID. Without
 them it does nothing and exits 0, so the workflows work the same with Telegram not set up.
-The report's light Markdown (headings, **bold**, `code`) becomes Telegram HTML; long reports
-are split into several messages on line boundaries.
+
+With `--digest` (the JSON of `garmin-coach-weekly --digest`) the message is the Italian,
+Telegram-style summary of `telegram_format`; otherwise the Markdown report's light Markdown
+(headings, **bold**, `code`) becomes Telegram HTML. `--button-url` adds a link button under the
+message. Long messages are split into several on line boundaries.
 """
 
 from __future__ import annotations
@@ -18,11 +21,14 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
+
+from garmin_coach_mcp.telegram_format import format_digest
 
 #: Telegram's limit is 4096 characters per message; keep a margin for the HTML tags.
 MAX_CHARS = 3800
 
-Post = Callable[[str, dict[str, str]], None]
+Post = Callable[[str, dict[str, Any]], None]
 
 
 def to_html(markdown: str) -> str:
@@ -64,19 +70,30 @@ def chunks(text: str, limit: int = MAX_CHARS) -> list[str]:
     return out
 
 
-def _http_post(url: str, data: dict[str, str]) -> None:
+def _http_post(url: str, data: dict[str, Any]) -> None:
     body = json.dumps(data).encode()
     req = urllib.request.Request(url, body, {"Content-Type": "application/json"})  # noqa: S310
     with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 - fixed https host
         resp.read()
 
 
-def send(text: str, token: str, chat_id: str, post: Post = _http_post) -> int:
-    """Send the report; returns the number of messages sent."""
+def send(
+    text: str,
+    token: str,
+    chat_id: str,
+    post: Post = _http_post,
+    *,
+    is_html: bool = False,
+    button: tuple[str, str] | None = None,
+) -> int:
+    """Send the report (Markdown, or ready HTML); returns the number of messages sent.
+    The optional (label, url) button goes under the last message."""
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    parts = chunks(to_html(text))
-    for part in parts:
-        data = {"chat_id": chat_id, "text": part, "disable_web_page_preview": "true"}
+    parts = chunks(text if is_html else to_html(text))
+    for i, part in enumerate(parts):
+        data: dict[str, Any] = {"chat_id": chat_id, "text": part, "disable_web_page_preview": True}
+        if button and i == len(parts) - 1:
+            data["reply_markup"] = {"inline_keyboard": [[{"text": button[0], "url": button[1]}]]}
         try:
             post(url, {**data, "parse_mode": "HTML"})
         except urllib.error.HTTPError as exc:
@@ -89,8 +106,11 @@ def send(text: str, token: str, chat_id: str, post: Post = _http_post) -> int:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="garmin-coach-telegram", description=__doc__.splitlines()[0])
-    p.add_argument("report", type=Path, help="Markdown report to send.")
+    p.add_argument("report", type=Path, help="Markdown report (sent when there is no digest).")
+    p.add_argument("--digest", type=Path, help="garmin-coach-weekly --digest JSON: Italian card.")
     p.add_argument("--footer", default="", help="Line appended to the message (e.g. a link).")
+    p.add_argument("--button-url", default="", help="Link button under the message.")
+    p.add_argument("--button-text", default="📄 Report completo", help="Its label.")
     return p.parse_args(argv)
 
 
@@ -101,14 +121,16 @@ def main(argv: Sequence[str] | None = None, post: Post = _http_post) -> int:
     if not token or not chat_id:
         print("Telegram not configured (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID): skipped.")
         return 0
-    if not args.report.is_file():
+    text, is_html = _message(args)
+    if text is None:
         print(f"No report at {args.report}: nothing to send.")
         return 0
-    text = args.report.read_text(encoding="utf-8")
     if args.footer:
-        text = f"{text.rstrip()}\n\n{args.footer}"
+        footer = html.escape(args.footer, quote=False) if is_html else args.footer
+        text = f"{text.rstrip()}\n\n{footer}"
+    button = (args.button_text, args.button_url) if args.button_url else None
     try:
-        n = send(text, token, chat_id, post)
+        n = send(text, token, chat_id, post, is_html=is_html, button=button)
     except urllib.error.HTTPError as exc:
         # Never print the URL: it contains the bot token.
         detail = exc.read().decode("utf-8", "replace")[:300]
@@ -119,6 +141,18 @@ def main(argv: Sequence[str] | None = None, post: Post = _http_post) -> int:
         return 1
     print(f"Sent the report to Telegram ({n} message(s)).")
     return 0
+
+
+def _message(args: argparse.Namespace) -> tuple[str | None, bool]:
+    """The Italian card from the digest when it is readable, else the Markdown report."""
+    if args.digest is not None and args.digest.is_file():
+        try:
+            return format_digest(json.loads(args.digest.read_text(encoding="utf-8"))), True
+        except (ValueError, TypeError, AttributeError, KeyError) as exc:
+            print(f"Digest unreadable ({exc}): sending the report instead.", file=sys.stderr)
+    if args.report.is_file():
+        return args.report.read_text(encoding="utf-8"), False
+    return None, False
 
 
 if __name__ == "__main__":

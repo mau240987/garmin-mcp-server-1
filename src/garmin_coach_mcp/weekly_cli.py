@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import shutil
 import sys
 import tempfile
@@ -52,6 +53,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--no-adapt", action="store_true", help="Review only, change nothing.")
     p.add_argument("--auto-push", action="store_true", help="Send the week's workouts.")
     p.add_argument("--summary", type=Path, help="Append the Markdown report to this file.")
+    p.add_argument(
+        "--digest",
+        type=Path,
+        help="Write the run's facts as JSON (for notifications, e.g. garmin-coach-telegram).",
+    )
     p.add_argument(
         "--preview",
         action="store_true",
@@ -86,13 +92,34 @@ async def run(args: argparse.Namespace) -> int:
             "Preview: nothing is changed or sent now. Monday's check-in repeats these steps "
             "with the data synced by then.",
         ]
-        return await _run(argparse.Namespace(**{**vars(args), "data_dir": copy}), monday, header)
+        ns = argparse.Namespace(**{**vars(args), "data_dir": copy})
+        return await _run(ns, monday, header, as_of)
 
 
 async def _run(
-    args: argparse.Namespace, today: dt.date | None = None, header: list[str] | None = None
+    args: argparse.Namespace,
+    today: dt.date | None = None,
+    header: list[str] | None = None,
+    as_of: dt.date | None = None,
 ) -> int:
     today = today or args.today or dt.date.today()
+    digest: dict[str, Any] = {
+        "mode": "preview" if args.preview else "check-in",
+        "week_of": today.isoformat(),
+        "as_of": (as_of or today).isoformat(),
+        "auto_push": bool(args.auto_push),
+        "errors": [],
+    }
+    try:
+        return await _check_in(args, today, header, digest)
+    finally:
+        if args.digest is not None:
+            args.digest.write_text(json.dumps(digest, indent=1, default=str), encoding="utf-8")
+
+
+async def _check_in(
+    args: argparse.Namespace, today: dt.date, header: list[str] | None, digest: dict[str, Any]
+) -> int:
     settings = Settings.from_env(
         read_only=False,
         allow_unofficial_writes=args.auto_push,
@@ -106,10 +133,19 @@ async def _run(
         plan_id = args.plan_id or active_plan_id(store, today)
     except NotFoundError as exc:
         out.append(f"**Nothing to do:** {exc}")
+        digest["nothing_to_do"] = str(exc)
         _report(out, args.summary)
         return 0
     plan = store.get_plan(plan_id)
     out.append(f"Plan `{plan_id}` (revision {plan.revision}).")
+    goal = store.get_goal(plan.goal_id)
+    digest["plan"] = {"id": plan_id, "revision": plan.revision, "vdot": plan.baseline.vdot}
+    digest["goal"] = {
+        "race_name": goal.race_name,
+        "race_type": goal.race_type.value,
+        "race_date": goal.race_date.isoformat(),
+        "target_time_s": goal.target_time_s,
+    }
 
     async with Client(app) as client:
         # 1-2. Review the last complete week (Monday-Sunday) and adapt the coming weeks.
@@ -123,13 +159,18 @@ async def _run(
             )
             if r.is_error:
                 out += ["", f"**Review failed:** {_text(r)}"]
+                digest["errors"].append(f"Review: {_text(r)}")
                 status = 1
             else:
                 review = (r.structured_content or {}).get("review", {})
+                digest["review"] = review
                 out += ["", "### Last week", "", str((r.structured_content or {}).get("text"))]
                 changes = _future_changes(review.get("suggested_changes") or [], today)
-                note = _skip_reason(plan, reviewed.index, review, args.no_adapt)
-                if changes and note:
+                skip = _skip_reason(plan, reviewed.index, review, args.no_adapt)
+                note = skip[1] if skip else None
+                digest["adaptation"] = {"changes": changes, "status": "none"}
+                if changes and skip:
+                    digest["adaptation"]["status"] = f"skipped:{skip[0]}"
                     out += ["", f"Suggested changes **not applied**: {note}", f"`{changes}`"]
                 elif changes:
                     u = await client.call_tool(
@@ -143,9 +184,12 @@ async def _run(
                     out += ["", "### Plan adapted", ""]
                     if u.is_error:
                         out.append(f"**Not applied:** {_text(u)}")
+                        digest["adaptation"]["status"] = "failed"
+                        digest["errors"].append(f"Plan update: {_text(u)}")
                         status = 1
                     else:
                         out += [f"- {a}" for a in (u.structured_content or {}).get("applied", [])]
+                        digest["adaptation"]["status"] = "applied"
                         _mark_reviewed(store, plan_id, reviewed.index)
                 else:
                     out += ["", "No change to the plan: continue as written."]
@@ -158,6 +202,11 @@ async def _run(
             base = ((p.structured_content or {}).get("profile") or {}).get("baseline") or {}
             now, then = base.get("vdot"), plan.baseline.vdot
             if now and then and abs(now - then) >= VDOT_DRIFT:
+                digest["vdot_change"] = {
+                    "plan": then,
+                    "now": now,
+                    "source": base.get("vdot_source"),
+                }
                 out += [
                     "",
                     f"**Performance level changed:** VDOT {then:g} in the plan, {now:g} now "
@@ -171,11 +220,15 @@ async def _run(
         out += ["", "### Garmin", ""]
         if d.is_error:
             out.append(f"**Dry run failed:** {_text(d)}")
+            digest["errors"].append(f"Garmin: {_text(d)}")
             _report(out, args.summary)
             return 1
         dry = d.structured_content or {}
         send = int(dry.get("to_create", 0)) + int(dry.get("to_schedule", 0))
         delete = int(dry.get("to_delete", 0))
+        digest["week"] = _coming_week(store.get_plan(plan_id), today, args.weeks)
+        garmin: dict[str, Any] = {"to_send": send, "to_delete": delete, "result": "dry_run"}
+        digest["garmin"] = garmin
         out.append(dry_run_text(str(dry.get("text", "")), apply=False))
         if args.preview:
             out += [
@@ -198,14 +251,18 @@ async def _run(
             res = await client.call_tool("push_plan_to_garmin", push)
             if res.is_error:
                 out += ["", f"**Push failed:** {_text(res)}"]
+                garmin["result"] = "failed"
+                digest["errors"].append(f"Garmin push: {_text(res)}")
                 status = 1
             else:
                 data = res.structured_content or {}
                 out += ["", str(data.get("text", "")).strip()]
+                garmin["result"] = "sent" if push_complete(data) else "partial"
                 if not push_complete(data):
                     out.append("**Not everything was sent or deleted: check Garmin Connect.**")
                     status = 1
         else:
+            garmin["result"] = "up_to_date"
             out += ["", "Nothing to send: Garmin is up to date."]
     _report(out, args.summary)
     return status
@@ -218,17 +275,47 @@ def _future_changes(changes: list[dict[str, Any]], today: dt.date) -> list[dict[
 
 def _skip_reason(
     plan: TrainingPlan, week: int, review: dict[str, Any], no_adapt: bool
-) -> str | None:
-    """Why unattended adaptation must not apply the suggestions (None = apply)."""
+) -> tuple[str, str] | None:
+    """Why unattended adaptation must not apply the suggestions: (code, text); None = apply."""
     if no_adapt:
-        return "review only (--no-adapt)."
+        return "no_adapt", "review only (--no-adapt)."
     if week in plan.auto_reviewed_weeks:
-        return f"week {week} was already reviewed and adapted by an earlier run."
+        return (
+            "already_reviewed",
+            f"week {week} was already reviewed and adapted by an earlier run.",
+        )
     if not review.get("actual_km_to_date"):
         # Nothing synced (or Garmin still processing Sunday's run): not evidence of a missed
         # week. Cutting volume on that would be wrong; the athlete decides with the assistant.
-        return "no activity found in Garmin for that week (not synced yet?)."
+        return "no_activity", "no activity found in Garmin for that week (not synced yet?)."
     return None
+
+
+def _coming_week(plan: TrainingPlan, today: dt.date, weeks: int) -> dict[str, Any]:
+    """The plan's sessions in the push window, after any adaptation."""
+    end = today + dt.timedelta(days=7 * weeks - 1)
+    week = plan.week_of(today)
+    return {
+        "index": week.index if week else None,
+        "phase": week.phase.value if week else None,
+        "target_km": week.target_km if week else None,
+        "sessions": [
+            {
+                "date": s.date.isoformat(),
+                "kind": s.kind.value,
+                "km": s.distance_km,
+                "minutes": s.est_duration_min,
+                "zone": s.zone,
+                "pace_hint": s.pace_hint,
+                "long_variant": s.long_variant.value if s.long_variant else None,
+                "fast_km": s.fast_km,
+                "week": w.index,
+            }
+            for w in plan.weeks
+            for s in w.sessions
+            if today <= s.date <= end
+        ],
+    }
 
 
 def _mark_reviewed(store: CoachStore, plan_id: str, week: int) -> None:
