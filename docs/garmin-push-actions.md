@@ -97,6 +97,13 @@ Con i secret `TELEGRAM_BOT_TOKEN` e `TELEGRAM_CHAT_ID`, sia **Weekly coach** sia
 preview** inviano il riepilogo in chat con `garmin-coach-telegram`. Senza secret il passo non fa
 nulla. Un errore di Telegram non fa fallire il check-in.
 
+Il messaggio è una scheda in italiano costruita dai dati del check-in (`garmin-coach-weekly
+--digest`): obiettivo e giorni alla gara, sedute della settimana passata (✅ fatta, 🟡 parziale,
+❌ saltata, 🔥 troppo intensa), km fatti su pianificati, recupero, adattamenti del piano, variazione
+del VDOT, gli allenamenti della settimana con tipo, km, durata e ritmo, e l'esito dell'invio a
+Garmin. Sotto c'è il pulsante **📄 Report completo** verso l'esecuzione su GitHub. Se i dati
+mancano o non si leggono, viene inviato il report testuale.
+
 1. Su Telegram apri **@BotFather**, invia `/newbot` e segui le istruzioni: ricevi il token del
    bot.
 2. Scrivi un messaggio qualsiasi al nuovo bot (o aggiungilo a un gruppo e scrivi lì).

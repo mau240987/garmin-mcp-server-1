@@ -52,7 +52,7 @@ jobs:
           AUTO_PUSH: ${{ vars.GARMIN_AUTO_PUSH }}
           NO_ADAPT: ${{ inputs.no_adapt }}
         run: |
-          args=(--data-dir . --summary "$RUNNER_TEMP/weekly.md")
+          args=(--data-dir . --summary "$RUNNER_TEMP/weekly.md" --digest "$RUNNER_TEMP/weekly.json")
           if [ "$AUTO_PUSH" = "true" ]; then args+=(--auto-push); fi
           if [ "$NO_ADAPT" = "true" ]; then args+=(--no-adapt); fi
           status=0
@@ -95,5 +95,6 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           if command -v garmin-coach-telegram >/dev/null; then
-            garmin-coach-telegram "$RUNNER_TEMP/weekly.md" --footer "Run: $RUN_URL"
+            garmin-coach-telegram "$RUNNER_TEMP/weekly.md" --digest "$RUNNER_TEMP/weekly.json" \
+              --button-url "$RUN_URL"
           fi
