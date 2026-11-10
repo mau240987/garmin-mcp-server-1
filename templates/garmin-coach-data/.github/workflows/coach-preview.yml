@@ -1,0 +1,59 @@
+# Coach preview — every Sunday evening: runs next Monday's weekly check-in on a copy of the
+# data, with the activities synced so far. The summary shows how the plan would be adapted
+# and which workouts Monday's check-in would send to Garmin.
+# Nothing is changed: no commit, no Garmin write, no issue. Monday's check-in decides with the
+# data synced by then (a run done after the preview can still change it).
+# The summary goes on Telegram when the secrets TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set.
+name: Coach preview
+
+on:
+  schedule:
+    - cron: "43 18 * * 0" # Sunday 18:43 UTC (19:43 in Italy in winter, 20:43 in summer)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: garmin-push
+  cancel-in-progress: false
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Garmin Race Coach
+        env:
+          REF: ${{ vars.GARMIN_COACH_REF || 'main' }}
+        run: pip install "git+https://github.com/mau240987/garmin-mcp-server-1.git@${REF}"
+
+      - name: Preview of next week
+        env:
+          GARMIN_PERSONAL_API_KEY: ${{ secrets.GARMIN_PERSONAL_API_KEY }}
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          GARMIN_TOKEN_DIR: ${{ runner.temp }}/garmin-tokens
+        run: |
+          status=0
+          garmin-coach-weekly --data-dir . --preview --summary "$RUNNER_TEMP/preview.md" || status=$?
+          cat "$RUNNER_TEMP/preview.md" >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      - name: Send the preview on Telegram
+        if: ${{ always() }}
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if command -v garmin-coach-telegram >/dev/null; then
+            garmin-coach-telegram "$RUNNER_TEMP/preview.md" --footer "Run: $RUN_URL"
+          fi

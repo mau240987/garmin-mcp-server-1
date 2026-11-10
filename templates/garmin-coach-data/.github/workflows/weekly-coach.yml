@@ -5,7 +5,8 @@
 # Garmin writes happen only if the repository variable GARMIN_AUTO_PUSH is "true": setting it
 # is a standing authorization to send each week's workouts without a further confirmation.
 # Otherwise the summary lists what to send with the "Push to Garmin" workflow.
-# Each run opens an issue with the summary (GitHub notifies it, also on the mobile app).
+# Each run opens an issue with the summary (GitHub notifies it, also on the mobile app) and,
+# when the secrets TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set, sends it on Telegram.
 name: Weekly coach
 
 on:
@@ -83,4 +84,16 @@ jobs:
               --jq '.[].number' | xargs -r -n1 gh issue close --reason completed || true
             gh issue create --title "Settimana del $(date -u +%F) — check-in ($RESULT)" \
               --body-file "$RUNNER_TEMP/weekly.md"
+          fi
+
+      - name: Send the summary on Telegram
+        if: ${{ always() }}
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if command -v garmin-coach-telegram >/dev/null; then
+            garmin-coach-telegram "$RUNNER_TEMP/weekly.md" --footer "Run: $RUN_URL"
           fi

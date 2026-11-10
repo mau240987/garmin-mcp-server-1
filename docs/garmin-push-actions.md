@@ -80,3 +80,31 @@ gara di preparazione già corsa non nasconde quindi l'obiettivo principale. Vale
 
 Secret facoltativo `GARMIN_PERSONAL_API_KEY`: con la chiave, le letture passano dall'API ufficiale
 (salute e recupero inclusi). Senza, usano lo stesso login dell'invio.
+
+## Anteprima della domenica
+
+Il workflow **Coach preview** (`coach-preview.yml`) parte ogni domenica sera (18:43 UTC) e si può
+avviare anche a mano. Esegue `garmin-coach-weekly --preview`, cioè lo stesso check-in di lunedì
+su una **copia** dei dati, con le attività sincronizzate fino a quel momento. Il riepilogo
+mostra la revisione della settimana, gli eventuali adattamenti e i workout che lunedì verrebbero
+inviati a Garmin. Non modifica nulla: niente commit, niente scritture su Garmin, niente issue.
+Lunedì il check-in decide con i dati sincronizzati nel frattempo: una corsa fatta dopo
+l'anteprima può ancora cambiare il risultato.
+
+## Report su Telegram
+
+Con i secret `TELEGRAM_BOT_TOKEN` e `TELEGRAM_CHAT_ID`, sia **Weekly coach** sia **Coach
+preview** inviano il riepilogo in chat con `garmin-coach-telegram`. Senza secret il passo non fa
+nulla. Un errore di Telegram non fa fallire il check-in.
+
+1. Su Telegram apri **@BotFather**, invia `/newbot` e segui le istruzioni: ricevi il token del
+   bot.
+2. Scrivi un messaggio qualsiasi al nuovo bot (o aggiungilo a un gruppo e scrivi lì).
+3. Nel browser apri `https://api.telegram.org/bot<TOKEN>/getUpdates`: il numero in
+   `"chat":{"id":...}` è il chat id.
+4. Nel repo dati, *Settings → Secrets and variables → Actions → Secrets*: aggiungi
+   `TELEGRAM_BOT_TOKEN` e `TELEGRAM_CHAT_ID`. Mai in chat.
+5. Prova: *Actions → Coach preview → Run workflow*.
+
+Il messaggio contiene il riepilogo (dati di allenamento e di recupero): usa una chat privata
+con il bot o un gruppo con persone di fiducia.

@@ -9,6 +9,10 @@
 4. Dry-runs `push_plan_to_garmin` for the coming week; with `--auto-push` it then sends exactly
    what the dry run listed (writes are enabled only then).
 
+With `--preview` it runs the same steps as next Monday's check-in on a throwaway copy of the
+data: the report shows how the plan would be adapted and what would be sent to Garmin, while
+the saved plan and Garmin stay untouched.
+
 Every step goes through the MCP tools, so their rules (expected_revision, dry-run counts) hold.
 See docs/garmin-push-actions.md for the scheduled GitHub Actions workflow.
 """
@@ -17,7 +21,9 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import shutil
 import sys
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -46,15 +52,47 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--no-adapt", action="store_true", help="Review only, change nothing.")
     p.add_argument("--auto-push", action="store_true", help="Send the week's workouts.")
     p.add_argument("--summary", type=Path, help="Append the Markdown report to this file.")
-    return p.parse_args(argv)
+    p.add_argument(
+        "--preview",
+        action="store_true",
+        help="Next Monday's check-in on a copy of the data: changes and sends nothing.",
+    )
+    args = p.parse_args(argv)
+    if args.preview and args.auto_push:
+        p.error("--preview never sends to Garmin: drop --auto-push.")
+    return args
 
 
 def _text(result: Any) -> str:
     return getattr(result.content[0], "text", "") if result.content else "(no message)"
 
 
+def next_monday(day: dt.date) -> dt.date:
+    """The Monday after `day` (a Monday gives the following one)."""
+    return day + dt.timedelta(days=7 - day.weekday())
+
+
 async def run(args: argparse.Namespace) -> int:
-    today = args.today or dt.date.today()
+    if not args.preview:
+        return await _run(args)
+    as_of = args.today or dt.date.today()
+    monday = next_monday(as_of)
+    with tempfile.TemporaryDirectory(prefix="coach-preview-") as tmp:
+        copy = Path(tmp) / "data"
+        shutil.copytree(args.data_dir, copy, ignore=shutil.ignore_patterns(".git"))
+        header = [
+            f"## Race Coach — preview of the week of {monday} (data as of {as_of})",
+            "",
+            "Preview: nothing is changed or sent now. Monday's check-in repeats these steps "
+            "with the data synced by then.",
+        ]
+        return await _run(argparse.Namespace(**{**vars(args), "data_dir": copy}), monday, header)
+
+
+async def _run(
+    args: argparse.Namespace, today: dt.date | None = None, header: list[str] | None = None
+) -> int:
+    today = today or args.today or dt.date.today()
     settings = Settings.from_env(
         read_only=False,
         allow_unofficial_writes=args.auto_push,
@@ -62,7 +100,7 @@ async def run(args: argparse.Namespace) -> int:
     )
     store = CoachStore(settings.coach_data_dir)
     app = build_server(build_router(settings), store=store, today=lambda: today)
-    out = [f"## Race Coach — weekly check-in ({today})", ""]
+    out = [*(header or [f"## Race Coach — weekly check-in ({today})"]), ""]
     status = 0
     try:
         plan_id = args.plan_id or active_plan_id(store, today)
@@ -139,7 +177,14 @@ async def run(args: argparse.Namespace) -> int:
         send = int(dry.get("to_create", 0)) + int(dry.get("to_schedule", 0))
         delete = int(dry.get("to_delete", 0))
         out.append(dry_run_text(str(dry.get("text", "")), apply=False))
-        if not args.auto_push:
+        if args.preview:
+            out += [
+                "",
+                f"If nothing changes, Monday's check-in sends these **{send}** workout(s)"
+                + (f" and deletes **{delete}** obsolete one(s)" if delete else "")
+                + " (when GARMIN_AUTO_PUSH is on).",
+            ]
+        elif not args.auto_push:
             out += [
                 "",
                 "Automatic push is off. To send: *Push to Garmin* with `apply`, "
