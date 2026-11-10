@@ -33,7 +33,7 @@ garmin-coach-push = "garmin_coach_mcp.push_cli:main"
 garmin-coach-weekly = "garmin_coach_mcp.weekly_cli:main"
 
 [project.urls]
-Repository = "https://github.com/mrosano1987/garmin-mcp-server-1"
+Repository = "https://github.com/mau240987/garmin-mcp-server-1"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/garmin_coach_mcp"]

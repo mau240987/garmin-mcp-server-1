@@ -4,7 +4,7 @@
   "description": "Garmin Connect MCP server and race coach: official Personal API reads, deterministic training plans, FIT/ICS export, optional workout sync.",
   "version": "2.0.0-dev0",
   "repository": {
-    "url": "https://github.com/mrosano1987/garmin-mcp-server-1",
+    "url": "https://github.com/mau240987/garmin-mcp-server-1",
     "source": "github"
   },
   "packages": [

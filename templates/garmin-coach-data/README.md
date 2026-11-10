@@ -1,7 +1,7 @@
 # Garmin Race Coach — private data
 
 Goals (`goals/`), plans (`plans/`) and exports (`exports/`) saved by the Race Coach
-([garmin-mcp-server-1](https://github.com/mrosano1987/garmin-mcp-server-1)). **Keep this
+([garmin-mcp-server-1](https://github.com/mau240987/garmin-mcp-server-1)). **Keep this
 repository private**: it contains training and health-derived data.
 
 ## Push to Garmin

@@ -55,7 +55,7 @@ jobs:
       - name: Install Garmin Race Coach
         env:
           REF: ${{ vars.GARMIN_COACH_REF || 'main' }}
-        run: pip install "git+https://github.com/mrosano1987/garmin-mcp-server-1.git@${REF}"
+        run: pip install "git+https://github.com/mau240987/garmin-mcp-server-1.git@${REF}"
 
       - name: Push to Garmin (dry run unless apply)
         env:

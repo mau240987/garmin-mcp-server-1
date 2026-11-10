@@ -58,7 +58,7 @@ senza consenso, nota "non è un parere medico". Riportare: se la skill si attiva
 ## T5 — Claude Code
 
 ```bash
-claude plugin marketplace add mrosano1987/garmin-mcp-server-1
+claude plugin marketplace add mau240987/garmin-mcp-server-1
 claude plugin install garmin-race-coach@garmin-coach
 ```
 

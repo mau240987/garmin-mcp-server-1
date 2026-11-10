@@ -42,7 +42,7 @@ Built on the battle-tested [garminconnect](https://github.com/cyberjunky/python-
 
 ```bash
 # Claude Code: plugin with the MCP server and the race-coach skill
-claude plugin marketplace add mrosano1987/garmin-mcp-server-1
+claude plugin marketplace add mau240987/garmin-mcp-server-1
 claude plugin install garmin-race-coach@garmin-coach
 # Gemini CLI (from a clone of this repo)
 gemini extensions install ./extensions/gemini/garmin-race-coach
@@ -91,9 +91,9 @@ never in the repository. Plans and profiles carry the Garmin attribution for der
 > then, install from the repository:
 
 ```bash
-pip install "git+https://github.com/mrosano1987/garmin-mcp-server-1.git"
+pip install "git+https://github.com/mau240987/garmin-mcp-server-1.git"
 # or from a clone:
-git clone https://github.com/mrosano1987/garmin-mcp-server-1.git
+git clone https://github.com/mau240987/garmin-mcp-server-1.git
 cd garmin-mcp-server-1
 python3 -m venv .venv && .venv/bin/pip install .
 # installs the `garmin-coach-mcp` command (python -m garmin_coach_mcp also works)
