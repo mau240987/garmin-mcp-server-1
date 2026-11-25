@@ -677,3 +677,71 @@ def test_race_week_strides_text_matches_the_workout_steps() -> None:
             st for st in session_steps(s, plan.easy_pace, None) if isinstance(st, RepeatStep)
         )
         assert f"{reps.repeat_count}x{reps.steps[0].duration_value} s" in s.description
+
+
+# Pace targets for the fast part of fartlek and interval sessions (from the VDOT).
+
+
+def test_vdot_race_paces_for_fast_work() -> None:
+    from garmin_coach_mcp.coach.vdot import fartlek_pace, interval_pace, race_pace
+
+    v = 40.7
+    five, ten, half = race_pace(v, 5000), race_pace(v, 10000), race_pace(v, 21097.5)
+    assert 280 <= five < ten < half < 320  # ~4:45, ~4:56, ~5:11 /km
+    assert fartlek_pace(v, 60) == (ten, five)  # short surges: 10K..5K pace
+    assert fartlek_pace(v, 180) == (half, ten)  # 3-minute surges: half..10K pace
+    assert interval_pace(v) == (five + 5, five - 5)
+
+
+def test_fartlek_surges_get_a_pace_target_with_a_vdot() -> None:
+    from garmin_coach_mcp.coach.engine import fartlek_session
+    from garmin_coach_mcp.coach.models import PlannedSession
+    from garmin_coach_mcp.coach.vdot import fartlek_pace
+
+    _k, zone, desc = fartlek_session(8.0, 362.0, 40.7)
+    assert "brisk (Z4) at 4:45-4:56/km / 1 min easy jog" in desc
+    s = PlannedSession(
+        date=MONDAY, kind=SessionKind.FARTLEK, distance_km=8.0, zone=zone, description=desc
+    )
+    reps = next(
+        st for st in session_steps(s, 362.0, None, None, 40.7) if isinstance(st, RepeatStep)
+    )
+    surge = reps.steps[0]
+    assert surge.duration_type == "time" and surge.primary == "pace"
+    slow, fast = fartlek_pace(40.7, surge.duration_value)
+    assert (surge.pace_low, surge.pace_high) == (
+        f"{round(slow) // 60}:{round(slow) % 60:02d}",
+        f"{round(fast) // 60}:{round(fast) % 60:02d}",
+    )
+    assert reps.steps[1].primary == "none"  # the easy jog stays effort-based
+    # Without a VDOT the surges stay effort-based, as before.
+    no_vdot = next(st for st in session_steps(s, 362.0, None) if isinstance(st, RepeatStep))
+    assert no_vdot.steps[0].primary == "none"
+    assert " at " not in fartlek_session(8.0, 362.0)[2]
+
+
+def test_intervals_target_5k_pace_and_hills_stay_effort_based() -> None:
+    from garmin_coach_mcp.coach.models import PlannedSession
+
+    def reps_of(desc: str, vdot: float | None, rp: float | None) -> RepeatStep:
+        s = PlannedSession(
+            date=MONDAY, kind=SessionKind.INTERVALS, distance_km=9.0, zone="Z4", description=desc
+        )
+        return next(
+            st for st in session_steps(s, 362.0, rp, None, vdot) if isinstance(st, RepeatStep)
+        )
+
+    km_reps = reps_of("Intervals: 5-6x1 km, 2-3 min easy.", 40.7, 330.0)
+    assert km_reps.steps[0].primary == "pace"
+    assert (km_reps.steps[0].pace_low, km_reps.steps[0].pace_high) == ("4:50", "4:40")
+    hills = reps_of("Hill repeats: 6-8x60 s uphill, jog down.", 40.7, 330.0)
+    assert hills.steps[0].primary == "none"
+    # No VDOT: the race pace target, as before.
+    assert reps_of("Intervals: 5-6x1 km, 2-3 min easy.", None, 330.0).steps[0].primary == "pace"
+
+
+def test_plan_fartleks_say_their_surge_pace() -> None:
+    baseline = PARIS_LIKE.model_copy(update={"vdot": 40.7})
+    plan = build_plan(_paris_goal(), baseline, dt.date(2026, 11, 9))
+    fartleks = [s for w in plan.weeks for s in w.sessions if s.kind is SessionKind.FARTLEK]
+    assert fartleks and all("brisk (Z4) at 4:" in s.description for s in fartleks)

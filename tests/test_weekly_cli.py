@@ -278,3 +278,30 @@ def test_preview_digest_is_marked_preview(
     assert d["mode"] == "preview" and d["week_of"] == "2026-11-23" and d["as_of"] == "2026-11-22"
     assert d["adaptation"]["status"] in ("none", "skipped:no_activity")
     assert d["garmin"]["result"] == "dry_run"
+
+
+def test_digest_sessions_carry_the_workout_target_pace(tmp_path: Path) -> None:
+    from garmin_coach_mcp.coach.models import AthleteBaseline, PlannedSession, SessionKind
+
+    store = CoachStore(tmp_path / "coach")
+    reads = FakeGarminReads()
+    setup_plan(make_app(reads, store))
+    plan = store.list_plans()[-1]
+    plan.baseline = AthleteBaseline(**{**plan.baseline.model_dump(), "vdot": 40.7})
+    fartlek = PlannedSession(
+        date=dt.date(2026, 11, 24),
+        kind=SessionKind.FARTLEK,
+        distance_km=8.0,
+        zone="Z3-Z4",
+        description="Fartlek: 8x1 min brisk (Z4) / 1 min easy jog, inside an easy run.",
+    )
+    easy = PlannedSession(
+        date=dt.date(2026, 11, 26),
+        kind=SessionKind.EASY,
+        distance_km=10,
+        zone="Z2",
+        description="Easy run.",
+    )
+    t = weekly_cli.target_pace(fartlek, plan, 330.0)
+    assert t is not None and t["label"] == "surges" and t["fast"] < t["slow"] < 300
+    assert weekly_cli.target_pace(easy, plan, 330.0) is None

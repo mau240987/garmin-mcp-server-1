@@ -29,6 +29,12 @@ KINDS: dict[str, tuple[str, str]] = {
 }
 VARIANTS = {"progressive": "progressivo", "race_pace": "a ritmo gara"}
 PHASES = {"base": "base", "build": "costruzione", "specific": "specifica", "taper": "scarico"}
+TARGETS = {
+    "surges": "allunghi",
+    "intervals": "ripetute",
+    "tempo": "tempo",
+    "race_pace": "ritmo gara",
+}
 HRV = {"BALANCED": "equilibrata", "UNBALANCED": "sbilanciata", "LOW": "bassa", "POOR": "scarsa"}
 STATUS = {"done": "✅", "partial": "🟡", "missed": "❌", "upcoming": "⏳", "race": "🏁"}
 RACES = {
@@ -90,12 +96,23 @@ def session_line(s: dict[str, Any]) -> str:
     parts = [f"{icon} <b>{day(s.get('date'))}</b> · {escape(label)} <b>{num(s.get('km'))} km</b>"]
     if s.get("minutes"):
         parts.append(f"~{s['minutes']} min")
+    target = s.get("target") or {}
     hint = re.sub(r"\s*\([^)]*\)\s*$", "", str(s.get("pace_hint") or "")).replace(" - ", "-")
-    if hint:
+    if target.get("slow") and target.get("fast"):
+        what = TARGETS.get(str(target.get("label")), "ritmo")
+        parts.append(f"⏱️ {what} <b>{pace(target['fast'])}-{pace(target['slow'])}/km</b>")
+        if hint:
+            parts.append(f"facile {escape(hint)}")
+    elif hint:
         parts.append(escape(hint))
     elif s.get("zone"):
         parts.append(escape(str(s["zone"])))
     return " · ".join(parts)
+
+
+def pace(seconds_per_km: float) -> str:
+    s = round(float(seconds_per_km))
+    return f"{s // 60}:{s % 60:02d}"
 
 
 def _goal(goal: dict[str, Any], today: dt.date) -> str:

@@ -47,7 +47,7 @@ from garmin_coach_mcp.coach.models import (
     TrainingPlan,
 )
 from garmin_coach_mcp.coach.sessions import fartlek_pattern
-from garmin_coach_mcp.coach.vdot import threshold_pace
+from garmin_coach_mcp.coach.vdot import fartlek_pace, interval_pace, threshold_pace
 from garmin_coach_mcp.formatting import format_pace
 
 ENGINE_VERSION = "1.3.0"
@@ -194,14 +194,20 @@ def _quality_count(phase: Phase, level: Level, days: int, recovery: bool) -> int
     return 1
 
 
-def fartlek_session(km: float, easy_pace: float | None) -> tuple[SessionKind, str, str]:
+def fartlek_session(
+    km: float, easy_pace: float | None, vdot: float | None = None
+) -> tuple[SessionKind, str, str]:
     """(kind, zone, description) of a fartlek; also used when a plan update rescales one."""
     reps, on_s, off_s = fartlek_pattern(km, easy_pace)
     on = f"{on_s // 60} min" if on_s >= 60 else f"{on_s} s"
+    pace = ""
+    if vdot:
+        slow, fast = fartlek_pace(vdot, on_s)
+        pace = f" at {format_pace(fast).removesuffix('/km')}-{format_pace(slow)}"
     return (
         SessionKind.FARTLEK,
         "Z3-Z4",
-        f"Fartlek: {reps}x{on} brisk (Z4) / {off_s // 60} min easy jog, inside an easy run.",
+        f"Fartlek: {reps}x{on} brisk (Z4){pace} / {off_s // 60} min easy jog, inside an easy run.",
     )
 
 
@@ -216,13 +222,14 @@ def _quality_session(
     fartlek: bool = False,
     easy_pace: float | None = None,
     threshold: float | None = None,
+    vdot: float | None = None,
 ) -> tuple[SessionKind, str, str]:
     """(kind, zone, description) for a quality session."""
     rp = goal.race_pace_s_per_km
     tp_txt = f" (~{format_pace(threshold)})" if threshold else ""
     rp_txt = f" at goal race pace ~{format_pace(rp)}" if rp else " at goal race effort"
     if fartlek and slot == 0 and phase in (Phase.BASE, Phase.BUILD):
-        return fartlek_session(km, easy_pace)
+        return fartlek_session(km, easy_pace, vdot)
     if phase is Phase.BASE:
         return SessionKind.STRIDES, "Z2", "Easy run with 6x20 s relaxed strides at the end."
     if phase is Phase.TAPER:
@@ -241,6 +248,9 @@ def _quality_session(
     if dclass in ("5k", "10k"):
         if slot == 1:
             return SessionKind.TEMPO, "Z3-Z4", f"Threshold: 3x10 min{tp_txt}, 2 min easy."
+        if vdot:
+            slow, fast = interval_pace(vdot)
+            rp_txt = f" at ~5K pace {format_pace(fast).removesuffix('/km')}-{format_pace(slow)}"
         return SessionKind.INTERVALS, "Z4-Z5", f"Intervals: 5-6x1 km{rp_txt}, 2-3 min easy."
     if dclass == "half":
         return SessionKind.RACE_PACE, "Z3-Z4", f"2x5-6 km{rp_txt}, 3 min easy."
@@ -362,6 +372,7 @@ def _layout_week(
     fartlek: bool = False,
     long_variant: bool = False,
     threshold: float | None = None,
+    vdot: float | None = None,
 ) -> tuple[list[PlannedSession], bool]:
     """Sessions of a normal (non-race) week. Returns (sessions, volume_was_capped)."""
     shift = goal.long_run_day - 6
@@ -445,6 +456,7 @@ def _layout_week(
                 fartlek=fartlek,
                 easy_pace=easy_pace,
                 threshold=threshold,
+                vdot=vdot,
             )
             mostly_easy = kind in (SessionKind.STRIDES, SessionKind.FARTLEK)
             sessions.append(
@@ -697,6 +709,7 @@ def build_plan(
                 fartlek=vary and loading_count % 2 == 0,
                 long_variant=vary and loading_count % 2 == 1,
                 threshold=threshold_pace(baseline.vdot) if baseline.vdot else None,
+                vdot=baseline.vdot,
             )
             if capped and phase is not Phase.TAPER:
                 capped_weeks.append(i + 1)
