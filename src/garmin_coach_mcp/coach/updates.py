@@ -173,7 +173,9 @@ def apply_changes(
                         s.long_variant = s.fast_km = s.fast_blocks = None
                         s.zone, s.description = "Z2", "Long run, easy and conversational."
                     elif s.kind is SessionKind.FARTLEK:  # pattern follows the new distance
-                        _k, s.zone, s.description = fartlek_session(new_km, new.easy_pace)
+                        _k, s.zone, s.description = fartlek_session(
+                            new_km, new.easy_pace, new.baseline.vdot
+                        )
                     _retire(new, s)
                     scaled += 1
             _refresh(week)

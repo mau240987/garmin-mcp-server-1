@@ -33,8 +33,10 @@ import anyio
 from mcp.client import Client
 
 from garmin_coach_mcp.cli import build_router
-from garmin_coach_mcp.coach.models import TrainingPlan
+from garmin_coach_mcp.coach.models import LongVariant, PlannedSession, SessionKind, TrainingPlan
+from garmin_coach_mcp.coach.sessions import fartlek_pattern
 from garmin_coach_mcp.coach.storage import CoachStore
+from garmin_coach_mcp.coach.vdot import fartlek_pace, interval_pace
 from garmin_coach_mcp.config import Settings
 from garmin_coach_mcp.errors import NotFoundError
 from garmin_coach_mcp.push_cli import active_plan_id, dry_run_text, push_complete
@@ -226,7 +228,9 @@ async def _check_in(
         dry = d.structured_content or {}
         send = int(dry.get("to_create", 0)) + int(dry.get("to_schedule", 0))
         delete = int(dry.get("to_delete", 0))
-        digest["week"] = _coming_week(store.get_plan(plan_id), today, args.weeks)
+        digest["week"] = _coming_week(
+            store.get_plan(plan_id), today, args.weeks, goal.race_pace_s_per_km
+        )
         garmin: dict[str, Any] = {"to_send": send, "to_delete": delete, "result": "dry_run"}
         digest["garmin"] = garmin
         out.append(dry_run_text(str(dry.get("text", "")), apply=False))
@@ -291,7 +295,40 @@ def _skip_reason(
     return None
 
 
-def _coming_week(plan: TrainingPlan, today: dt.date, weeks: int) -> dict[str, Any]:
+def target_pace(
+    session: PlannedSession, plan: TrainingPlan, race_pace: float | None
+) -> dict[str, Any] | None:
+    """Pace range of the session's fast part, as the Garmin workout steps set it:
+    {"label", "slow", "fast"} in s/km, or None (easy running, effort-based work)."""
+    vdot, kind = plan.baseline.vdot, session.kind
+    if kind is SessionKind.FARTLEK and vdot:
+        _reps, on_s, _off = fartlek_pattern(session.distance_km, plan.easy_pace)
+        slow, fast = fartlek_pace(vdot, on_s)
+        return {"label": "surges", "slow": slow, "fast": fast}
+    if kind is SessionKind.INTERVALS and not session.description.lower().startswith("hill"):
+        if vdot:
+            slow, fast = interval_pace(vdot)
+            return {"label": "intervals", "slow": slow, "fast": fast}
+        if race_pace:
+            return {"label": "intervals", "slow": race_pace + 10, "fast": race_pace - 5}
+    if (
+        kind is SessionKind.TEMPO
+        and plan.threshold_pace
+        and session.description.startswith(("Tempo", "Threshold"))
+    ):
+        tp = plan.threshold_pace
+        return {"label": "tempo", "slow": tp + 8, "fast": tp - 5}
+    if race_pace and (
+        kind is SessionKind.RACE_PACE
+        or (session.long_variant is LongVariant.RACE_PACE and session.fast_km)
+    ):
+        return {"label": "race_pace", "slow": race_pace + 10, "fast": race_pace - 5}
+    return None
+
+
+def _coming_week(
+    plan: TrainingPlan, today: dt.date, weeks: int, race_pace: float | None = None
+) -> dict[str, Any]:
     """The plan's sessions in the push window, after any adaptation."""
     end = today + dt.timedelta(days=7 * weeks - 1)
     week = plan.week_of(today)
@@ -309,6 +346,7 @@ def _coming_week(plan: TrainingPlan, today: dt.date, weeks: int) -> dict[str, An
                 "pace_hint": s.pace_hint,
                 "long_variant": s.long_variant.value if s.long_variant else None,
                 "fast_km": s.fast_km,
+                "target": target_pace(s, plan, race_pace),
                 "week": w.index,
             }
             for w in plan.weeks

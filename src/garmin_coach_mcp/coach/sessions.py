@@ -1,13 +1,15 @@
 """Planned session -> structured workout steps (shared by Garmin push and FIT export).
 
 Paces: easy sessions get an easy pace range when the athlete's easy pace is known; race-pace
-work gets the goal race pace (+10/-5 s/km). Everything else is effort-based (no target), so a
-missing pace never produces a fake target.
+work gets the goal race pace (+10/-5 s/km). With a performance level (VDOT) the fartlek surges
+and the 1 km intervals get equivalent race paces (see `vdot`). Everything else is effort-based
+(no target, e.g. hill repeats), so a missing pace never produces a fake target.
 """
 
 from __future__ import annotations
 
 from garmin_coach_mcp.coach.models import LongVariant, PlannedSession, SessionKind
+from garmin_coach_mcp.coach.vdot import fartlek_pace, interval_pace
 from garmin_coach_mcp.models import RepeatStep, WorkoutStep
 
 WARMUP_KM = 2.0
@@ -54,11 +56,24 @@ def _run(
     return WorkoutStep.model_validate(kwargs)
 
 
+def _timed(seconds: int, pace_range: tuple[float, float] | None) -> WorkoutStep:
+    kwargs: dict[str, object] = {
+        "type": "run",
+        "duration_type": "time",
+        "duration_value": seconds,
+        "primary": "pace" if pace_range else "none",
+    }
+    if pace_range:
+        kwargs["pace_low"], kwargs["pace_high"] = _pace(pace_range[0]), _pace(pace_range[1])
+    return WorkoutStep.model_validate(kwargs)
+
+
 def session_steps(
     session: PlannedSession,
     easy_pace: float | None,
     race_pace: float | None,
     threshold_pace: float | None = None,
+    vdot: float | None = None,
 ) -> list[WorkoutStep | RepeatStep]:
     """Steps for one session. Raises ValueError for a race (not a workout)."""
     km = session.distance_km
@@ -75,14 +90,13 @@ def session_steps(
         reps, on_s, off_s = fartlek_pattern(km, easy_pace)
         block_km = reps * (on_s + off_s) / (easy_pace or DEFAULT_EASY_S_PER_KM)
         warmup = max(1.0, min(WARMUP_KM, (km - block_km) / 2))
+        surge = fartlek_pace(vdot, on_s) if vdot else None
         return [
             _run(warmup, "warmup", easy),
             RepeatStep(
                 repeat_count=reps,
                 steps=[
-                    WorkoutStep(
-                        type="run", duration_type="time", duration_value=on_s, primary="none"
-                    ),
+                    _timed(on_s, surge),
                     WorkoutStep(
                         type="recover", duration_type="time", duration_value=off_s, primary="none"
                     ),
@@ -110,11 +124,13 @@ def session_steps(
     steps: list[WorkoutStep | RepeatStep] = [_run(WARMUP_KM, "warmup", easy)]
     if kind is SessionKind.INTERVALS:
         reps = max(3, min(8, int(main)))
+        hills = session.description.lower().startswith("hill")
+        target = None if hills else interval_pace(vdot) if vdot else rp
         steps.append(
             RepeatStep(
                 repeat_count=reps,
                 steps=[
-                    _run(1.0, "run", rp),
+                    _run(1.0, "run", target),
                     WorkoutStep(
                         type="recover", duration_type="time", duration_value=120, primary="none"
                     ),

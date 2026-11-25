@@ -9,6 +9,9 @@ training paces as a share of VDOT. Deterministic, no data beyond distance and ti
 - VDOT = VO2(race velocity) / share(race time)
 
 Training intensities (Daniels' Running Formula): easy runs 59-74% of VDOT, threshold ~88%.
+Faster work is given as equivalent race paces, which athletes recognise: fartlek surges between
+the 10K and 5K pace (short surges) or the half-marathon and 10K pace (3-minute surges), 1 km
+intervals at about 5K pace (Daniels' interval pace).
 """
 
 from __future__ import annotations
@@ -58,6 +61,29 @@ def race_time(vdot: float, distance_m: float) -> float:
         else:
             hi = mid
     return (lo + hi) / 2
+
+
+#: Fartlek surges of at most this many seconds are "short" (10K-5K pace).
+SHORT_SURGE_S = 90
+INTERVAL_RANGE_S = 5  # 1 km intervals: 5K pace +/- this
+
+
+def race_pace(vdot: float, distance_m: float) -> float:
+    """Equivalent race pace (s/km) for `distance_m` at this VDOT."""
+    return race_time(vdot, distance_m) / (distance_m / 1000)
+
+
+def fartlek_pace(vdot: float, surge_s: int) -> tuple[float, float]:
+    """(slow, fast) pace range (s/km) of the fartlek surges."""
+    if surge_s <= SHORT_SURGE_S:
+        return race_pace(vdot, 10_000), race_pace(vdot, 5_000)
+    return race_pace(vdot, 21_097.5), race_pace(vdot, 10_000)
+
+
+def interval_pace(vdot: float) -> tuple[float, float]:
+    """(slow, fast) pace range (s/km) of 1 km intervals: about 5K pace."""
+    p = race_pace(vdot, 5_000)
+    return p + INTERVAL_RANGE_S, p - INTERVAL_RANGE_S
 
 
 def easy_pace(vdot: float) -> float:

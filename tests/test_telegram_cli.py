@@ -267,3 +267,29 @@ def test_unreadable_digest_falls_back_to_the_report(
         == 0
     )
     assert sent[0]["text"] == "<b>English report</b>"
+
+
+def test_card_shows_the_target_pace_of_fast_work() -> None:
+    from garmin_coach_mcp.telegram_format import session_line
+
+    line = session_line(
+        {
+            "date": "2026-12-15",
+            "kind": "fartlek",
+            "km": 9.5,
+            "minutes": 57,
+            "pace_hint": "6:02/km - 6:32/km (easy)",
+            "target": {"label": "surges", "slow": 296.0, "fast": 285.0},
+        }
+    )
+    assert "⏱️ allunghi <b>4:45-4:56/km</b>" in line and "facile 6:02/km-6:32/km" in line
+    tempo = session_line(
+        {
+            "date": "2026-12-01",
+            "kind": "tempo",
+            "km": 9,
+            "zone": "Z3",
+            "target": {"label": "tempo", "slow": 309.0, "fast": 296.0},
+        }
+    )
+    assert "⏱️ tempo <b>4:56-5:09/km</b>" in tempo and "Z3" not in tempo

@@ -230,7 +230,9 @@ def to_fit_zip(
         for week, s in select_sessions(plan, start, end):
             if s.kind is SessionKind.RACE:
                 continue
-            steps = session_steps(s, plan.easy_pace, goal.race_pace_s_per_km, plan.threshold_pace)
+            steps = session_steps(
+                s, plan.easy_pace, goal.race_pace_s_per_km, plan.threshold_pace, plan.baseline.vdot
+            )
             name = workout_name(s, week)
             # Each FIT file travels alone once imported: attribution inside it (Brand Guidelines).
             data = _fit_workout(name, steps, plan.created_at, plan.attribution)

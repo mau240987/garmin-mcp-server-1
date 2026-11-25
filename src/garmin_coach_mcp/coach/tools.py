@@ -732,7 +732,11 @@ def register_coach_tools(
                 try:
                     if needs_create:
                         steps = session_steps(
-                            s, plan.easy_pace, goal.race_pace_s_per_km, plan.threshold_pace
+                            s,
+                            plan.easy_pace,
+                            goal.race_pace_s_per_km,
+                            plan.threshold_pace,
+                            plan.baseline.vdot,
                         )
                         minutes = s.est_duration_min or max(20, round(s.distance_km * 7))
                         # Mark before calling Garmin: a crash in between leaves an "uncertain"
