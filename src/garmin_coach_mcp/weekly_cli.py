@@ -33,6 +33,7 @@ import anyio
 from mcp.client import Client
 
 from garmin_coach_mcp.cli import build_router
+from garmin_coach_mcp.coach import core
 from garmin_coach_mcp.coach.models import LongVariant, PlannedSession, SessionKind, TrainingPlan
 from garmin_coach_mcp.coach.sessions import fartlek_pattern
 from garmin_coach_mcp.coach.storage import CoachStore
@@ -333,6 +334,7 @@ def _coming_week(
     end = today + dt.timedelta(days=7 * weeks - 1)
     week = plan.week_of(today)
     return {
+        "core": core.summary_it() if plan.core_weekday is not None else None,
         "index": week.index if week else None,
         "phase": week.phase.value if week else None,
         "target_km": week.target_km if week else None,
@@ -347,6 +349,7 @@ def _coming_week(
                 "long_variant": s.long_variant.value if s.long_variant else None,
                 "fast_km": s.fast_km,
                 "target": target_pace(s, plan, race_pace),
+                "core": core.wants_core(plan.core_weekday, s.date, plan.race_date),
                 "week": w.index,
             }
             for w in plan.weeks

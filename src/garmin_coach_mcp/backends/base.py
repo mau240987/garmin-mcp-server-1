@@ -93,6 +93,10 @@ class GarminBackend(Protocol):
         """Create a `garminconnect.workout.RunningWorkout`; returns a dict with workoutId."""
         ...
 
+    def create_strength_workout(self, workout: Any) -> dict[str, Any]:
+        """Create a `garminconnect.workout.StrengthWorkout`; returns a dict with workoutId."""
+        ...
+
     def schedule_workout(self, workout_id: int, day: dt.date) -> None: ...
 
     def delete_workout(self, workout_id: int) -> None: ...
@@ -140,6 +144,9 @@ class BackendBase:
         return self._unsupported(Capability.WORKOUTS_LIST)  # type: ignore[no-any-return]
 
     def create_running_workout(self, workout: Any) -> dict[str, Any]:
+        return self._unsupported(Capability.WORKOUT_CREATE)  # type: ignore[no-any-return]
+
+    def create_strength_workout(self, workout: Any) -> dict[str, Any]:
         return self._unsupported(Capability.WORKOUT_CREATE)  # type: ignore[no-any-return]
 
     def schedule_workout(self, workout_id: int, day: dt.date) -> None:

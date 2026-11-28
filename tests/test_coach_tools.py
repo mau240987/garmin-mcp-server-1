@@ -119,6 +119,7 @@ class FakeGarminWriter(BackendBase):
         self.deleted: list[int] = []
         self.next_id = 1000
         self.fail_schedule_on: set[dt.date] = set()
+        self.strength: list[Any] = []
 
     def capabilities(self) -> frozenset[Capability]:
         return frozenset(
@@ -128,6 +129,12 @@ class FakeGarminWriter(BackendBase):
     def create_running_workout(self, workout: Any) -> dict[str, Any]:
         self.next_id += 1
         self.created.append(workout.workoutName)
+        return {"workoutId": self.next_id}
+
+    def create_strength_workout(self, workout: Any) -> dict[str, Any]:
+        self.next_id += 1
+        self.created.append(workout.workoutName)
+        self.strength.append(workout)
         return {"workoutId": self.next_id}
 
     def schedule_workout(self, workout_id: int, day: dt.date) -> None:
@@ -899,3 +906,89 @@ def test_slow_hr_zone_pace_is_flagged(app: MCPServer, reads: FakeGarminReads) ->
     prof = call(app, "get_athlete_profile", {})["profile"]
     assert prof["baseline"]["easy_pace_s_per_km"] < 450 - 45
     assert any("Z2 ceiling" in i for i in prof["insights"])
+
+
+# Core routine: a bodyweight strength workout after the run on the plan's core day.
+
+
+def test_core_routine_is_short_and_uses_real_garmin_exercises() -> None:
+    from garminconnect import exercises
+
+    from garmin_coach_mcp.coach import core
+
+    known = {(x["category"], x["exercise"]) for x in exercises.EXERCISES}
+    assert all((e.category, e.exercise) in known for e in core.ROUTINE)
+    assert 9 * 60 <= core.duration_s() <= 11 * 60
+    payload = core.build_core_workout("RC core").to_dict()
+    assert payload["sportType"]["sportTypeKey"] == "strength_training"
+    group = payload["workoutSegments"][0]["workoutSteps"][0]
+    assert group["numberOfIterations"] == core.ROUNDS
+    moves = [s for s in group["workoutSteps"] if s["stepType"]["stepTypeKey"] == "interval"]
+    assert [m["exerciseName"] for m in moves] == [e.exercise for e in core.ROUTINE]
+    assert all(m["description"] for m in moves)
+    race = dt.date(2027, 4, 4)
+    assert core.wants_core(1, dt.date(2026, 12, 1), race)  # a Tuesday
+    assert not core.wants_core(1, dt.date(2026, 12, 3), race)  # Thursday
+    assert not core.wants_core(1, dt.date(2027, 3, 30), race)  # race week
+    assert not core.wants_core(None, dt.date(2026, 12, 1), race)
+
+
+def test_set_core_adds_a_strength_workout_after_the_tuesday_run(
+    app: MCPServer, writer: FakeGarminWriter, store: CoachStore
+) -> None:
+    out = setup_plan(app)
+    upd = call(app, "apply_plan_update", {"changes": [{"op": "set_core", "weekday": 1}]})
+    assert "Tuesday" in " ".join(upd["applied"])
+    assert store.get_plan(out["plan_id"]).core_weekday == 1
+    args = {"from_date": "2026-11-16", "weeks": 1}
+    dry = call(app, "push_plan_to_garmin", args)
+    assert dry["to_create"] == 5  # 4 runs + the core on Tuesday 17/11
+    assert "2026-11-17 RC W1 Tue 17/11 core 10min" in dry["text"]
+    call(app, "push_plan_to_garmin", {**args, "dry_run": False, "expected_count": 5})
+    assert len(writer.strength) == 1
+    assert writer.strength[0].workoutName == "RC W1 Tue 17/11 core 10min"
+    tue = next(s for s in store.get_plan(out["plan_id"]).weeks[0].sessions if s.date.day == 17)
+    assert tue.garmin_workout_id and tue.core_workout_id and tue.core_scheduled
+    assert (tue.core_workout_id, dt.date(2026, 11, 17)) in writer.scheduled
+    # Nothing left to send: no duplicate core.
+    assert call(app, "push_plan_to_garmin", args)["to_create"] == 0
+
+
+def test_removing_the_core_deletes_its_garmin_workout(
+    app: MCPServer, writer: FakeGarminWriter, store: CoachStore
+) -> None:
+    out = setup_plan(app)
+    call(app, "apply_plan_update", {"changes": [{"op": "set_core", "weekday": 1}]})
+    args = {"from_date": "2026-11-16", "weeks": 1}
+    call(app, "push_plan_to_garmin", {**args, "dry_run": False, "expected_count": 5})
+    core_id = store.get_plan(out["plan_id"]).weeks[0].sessions[0].core_workout_id
+    call(app, "apply_plan_update", {"changes": [{"op": "set_core", "weekday": None}]})
+    dry = call(app, "push_plan_to_garmin", args)
+    assert dry["to_create"] == 0 and dry["to_delete"] == 1
+    call(
+        app,
+        "push_plan_to_garmin",
+        {**args, "dry_run": False, "expected_count": 0, "expected_delete_count": 1},
+    )
+    assert writer.deleted == [core_id]
+    assert store.get_plan(out["plan_id"]).weeks[0].sessions[0].core_workout_id is None
+
+
+def test_moving_the_core_run_retires_its_core_workout(
+    app: MCPServer, writer: FakeGarminWriter, store: CoachStore
+) -> None:
+    out = setup_plan(app)
+    call(app, "apply_plan_update", {"changes": [{"op": "set_core", "weekday": 1}]})
+    call(
+        app,
+        "push_plan_to_garmin",
+        {"from_date": "2026-11-16", "weeks": 1, "dry_run": False, "expected_count": 5},
+    )
+    plan = store.get_plan(out["plan_id"])
+    run_id, core_id = (
+        plan.weeks[0].sessions[0].garmin_workout_id,
+        plan.weeks[0].sessions[0].core_workout_id,
+    )
+    call(app, "apply_plan_update", {"changes": [{"op": "make_easy", "date": "2026-11-17"}]})
+    stale = store.get_plan(out["plan_id"]).stale_garmin_workout_ids
+    assert run_id in stale and core_id in stale

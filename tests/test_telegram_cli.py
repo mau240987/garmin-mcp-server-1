@@ -293,3 +293,19 @@ def test_card_shows_the_target_pace_of_fast_work() -> None:
         }
     )
     assert "⏱️ tempo <b>4:56-5:09/km</b>" in tempo and "Z3" not in tempo
+
+
+def test_card_shows_the_core_after_the_run() -> None:
+    from garmin_coach_mcp.telegram_format import format_digest
+
+    d = {
+        **DIGEST,
+        "week": {
+            **DIGEST["week"],
+            "sessions": [{**DIGEST["week"]["sessions"][0], "core": True}],
+            "core": "2 giri: Plank frontale 40″",
+        },
+    }
+    out = format_digest(d)
+    assert "   💪 + core ~10 min a corpo libero, dopo la corsa" in out
+    assert "💪 <b>Core</b> (casa, corpo libero): 2 giri: Plank frontale 40″" in out

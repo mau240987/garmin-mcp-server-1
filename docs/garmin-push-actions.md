@@ -115,3 +115,18 @@ mancano o non si leggono, viene inviato il report testuale.
 
 Il messaggio contiene il riepilogo (dati di allenamento e di recupero): usa una chat privata
 con il bot o un gruppo con persone di fiducia.
+
+## Core dopo la corsa
+
+Con l'aggiornamento del piano `set_core` (es. `{"op": "set_core", "weekday": 1}` per il martedì),
+dopo la corsa di quel giorno c'è un allenamento di **core a corpo libero di circa 10 minuti**
+(`coach/core.py`): 2 giri di plank frontale 40″, plank laterale sinistro e destro 30″, dead bug
+40″, ponte glutei 40″, bird dog 40″, con 15″ di pausa tra gli esercizi e 30″ tra i giri. Si fa
+dopo la corsa, non prima: un tronco già affaticato peggiora la parte intensa della seduta. Niente
+core nella settimana della gara.
+
+Su Garmin è un **allenamento di forza separato**, programmato lo stesso giorno della corsa: il
+Forerunner mostra ogni esercizio con la sua animazione e la corsa resta un'attività di corsa
+pulita. *Push to Garmin* e il check-in lo contano nei workout da inviare; con `weekday: null` il
+core viene tolto e il workout già inviato cancellato al push successivo. La scheda Telegram lo
+indica sotto la corsa del giorno, con l'elenco degli esercizi.

@@ -44,6 +44,7 @@ HARD_KINDS = frozenset(
     }
 )
 MIN_SESSION_KM = 2.0
+WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 
 
 class ScaleWeek(BaseModel):
@@ -68,13 +69,24 @@ class MakeEasy(BaseModel):
     date: dt.date
 
 
+class SetCore(BaseModel):
+    op: Literal["set_core"] = "set_core"
+    weekday: int | None = Field(
+        default=1,
+        ge=0,
+        le=6,
+        description="Weekday (0 = Monday) whose run is followed by a ~10 min bodyweight core "
+        "workout; null removes it.",
+    )
+
+
 class RegenerateFrom(BaseModel):
     op: Literal["regenerate_from"] = "regenerate_from"
     date: dt.date = Field(description="Rebuild the plan from this date with a fresh baseline.")
 
 
 PlanChange = Annotated[
-    ScaleWeek | SkipSession | MoveSession | MakeEasy | RegenerateFrom,
+    ScaleWeek | SkipSession | MoveSession | MakeEasy | SetCore | RegenerateFrom,
     Field(discriminator="op"),
 ]
 
@@ -115,6 +127,11 @@ def _retire(plan: TrainingPlan, session: PlannedSession) -> None:
         session.garmin_workout_id = None
     session.garmin_scheduled = False
     session.garmin_push_pending = False
+    if session.core_workout_id is not None:
+        plan.stale_garmin_workout_ids.append(session.core_workout_id)
+        session.core_workout_id = None
+    session.core_scheduled = False
+    session.core_push_pending = False
 
 
 def _cancel_date(plan: TrainingPlan, day: dt.date) -> None:
@@ -141,7 +158,7 @@ def baseline_from_plan(plan: TrainingPlan, before: dt.date) -> AthleteBaseline:
 def apply_changes(
     plan: TrainingPlan,
     goal: RaceGoal,
-    changes: list[ScaleWeek | SkipSession | MoveSession | MakeEasy | RegenerateFrom],
+    changes: list[ScaleWeek | SkipSession | MoveSession | MakeEasy | SetCore | RegenerateFrom],
     *,
     today: dt.date,
     now: dt.datetime,
@@ -260,6 +277,13 @@ def apply_changes(
             )
             _refresh(week)
             done.append(f"{change.date}: {s.kind.value} turned into an easy run.")
+        elif isinstance(change, SetCore):
+            new.core_weekday = change.weekday
+            if change.weekday is None:
+                done.append("Core workout removed.")
+            else:
+                day = WEEKDAYS[change.weekday]
+                done.append(f"Core workout (~10 min, bodyweight) after the {day} run.")
         else:  # RegenerateFrom
             if change.date < today or change.date >= goal.race_date:
                 raise _bad(

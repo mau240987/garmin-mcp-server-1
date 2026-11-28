@@ -218,6 +218,13 @@ class PlannedSession(_Model):
         default=False,
         description="A create was started but not confirmed: check Garmin before retrying.",
     )
+    core_workout_id: int | None = Field(
+        default=None, description="Garmin id of the core workout after this run, once pushed."
+    )
+    core_scheduled: bool = Field(default=False, description="The core workout is scheduled.")
+    core_push_pending: bool = Field(
+        default=False, description="A core create was started but not confirmed."
+    )
 
 
 class PlanWeek(_Model):
@@ -256,6 +263,10 @@ class TrainingPlan(_Model):
     auto_reviewed_weeks: list[int] = Field(
         default_factory=list,
         description="Weeks already reviewed by garmin-coach-weekly: never adapted twice.",
+    )
+    core_weekday: Weekday | None = Field(
+        default=None,
+        description="A ~10-minute bodyweight core workout follows the run on this weekday.",
     )
     stale_garmin_workout_ids: list[int] = Field(
         default_factory=list,
