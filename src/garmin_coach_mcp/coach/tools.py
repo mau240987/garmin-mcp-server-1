@@ -18,11 +18,13 @@ from mcp.types import ToolAnnotations
 from pydantic import BaseModel, BeforeValidator, Field
 
 from garmin_coach_mcp.backends import GARMIN_DERIVED_ATTRIBUTION, BackendRouter, Capability
+from garmin_coach_mcp.coach import core
 from garmin_coach_mcp.coach.engine import build_plan
 from garmin_coach_mcp.coach.export import select_sessions, to_fit_zip, to_ics, to_markdown
 from garmin_coach_mcp.coach.models import (
     AthleteBaseline,
     Level,
+    PlannedSession,
     RaceGoal,
     RaceType,
     SessionKind,
@@ -48,6 +50,10 @@ from garmin_coach_mcp.errors import (
     UpstreamServiceError,
 )
 from garmin_coach_mcp.workouts import build_running_workout
+
+#: (id, scheduled, pending) attributes of a session's Garmin workouts.
+RUN_SLOT = ("garmin_workout_id", "garmin_scheduled", "garmin_push_pending")
+CORE_SLOT = ("core_workout_id", "core_scheduled", "core_push_pending")
 
 MAX_GOAL_DAYS_AHEAD = 730
 INLINE_EXPORT_LIMIT = 60_000
@@ -254,6 +260,10 @@ def register_coach_tools(
                         plan.stale_garmin_workout_ids.append(sess.garmin_workout_id)
                         sess.garmin_workout_id = None
                         sess.garmin_scheduled = False
+                    if sess.core_workout_id is not None and sess.date >= day:
+                        plan.stale_garmin_workout_ids.append(sess.core_workout_id)
+                        sess.core_workout_id = None
+                        sess.core_scheduled = False
             old.superseded_by = plan.id
             changed.append(old)
         return changed
@@ -659,25 +669,43 @@ def register_coach_tools(
         window = [
             (w, s) for w, s in select_sessions(plan, start, end) if s.kind is not SessionKind.RACE
         ]
-        uncertain = [s for _w, s in window if s.garmin_push_pending]
+
+        # Each session has a run slot and, on the plan's core day, a core slot (a separate
+        # strength workout on the same date).
+        def wants(s: PlannedSession) -> bool:
+            return core.wants_core(plan.core_weekday, s.date, plan.race_date)
+
+        items = [(w, s, RUN_SLOT) for w, s in window]
+        items += [(w, s, CORE_SLOT) for w, s in window if wants(s)]
+        orphan_cores = [s for _w, s in window if s.core_workout_id is not None and not wants(s)]
+        uncertain = [(w, s, slot) for w, s, slot in items if getattr(s, slot[2])]
         create = [
-            (w, s)
-            for w, s in window
-            if s.garmin_workout_id is None and (not s.garmin_push_pending or retry_uncertain)
+            (w, s, slot)
+            for w, s, slot in items
+            if getattr(s, slot[0]) is None and (not getattr(s, slot[2]) or retry_uncertain)
         ]
         schedule = [
-            (w, s) for w, s in window if s.garmin_workout_id is not None and not s.garmin_scheduled
+            (w, s, slot)
+            for w, s, slot in items
+            if getattr(s, slot[0]) is not None and not getattr(s, slot[1])
         ]
-        stale = list(plan.stale_garmin_workout_ids)
+        stale = list(plan.stale_garmin_workout_ids) + [
+            s.core_workout_id for s in orphan_cores if s.core_workout_id is not None
+        ]
         to_send = len(create) + len(schedule)
-        listing = [f"- create {s.date} {workout_name(s, w)}" for w, s in create]
+
+        def job_name(w: int, s: PlannedSession, slot: tuple[str, str, str]) -> str:
+            return core.workout_name(s.date, w) if slot is CORE_SLOT else workout_name(s, w)
+
+        listing = [f"- create {s.date} {job_name(w, s, slot)}" for w, s, slot in create]
         listing += [
-            f"- schedule {s.date} {workout_name(s, w)} (already created)" for w, s in schedule
+            f"- schedule {s.date} {job_name(w, s, slot)} (already created)"
+            for w, s, slot in schedule
         ]
         listing += [
-            f"- UNCERTAIN {s.date}: an earlier create was interrupted; check Garmin Connect "
-            "for this workout before retrying with retry_uncertain=true"
-            for s in uncertain
+            f"- UNCERTAIN {s.date} {job_name(w, s, slot)}: an earlier create was interrupted; "
+            "check Garmin Connect for this workout before retrying with retry_uncertain=true"
+            for w, s, slot in uncertain
             if not retry_uncertain
         ]
         base = PushResult(
@@ -686,7 +714,7 @@ def register_coach_tools(
             to_create=len(create),
             to_schedule=len(schedule),
             to_delete=len(stale),
-            uncertain=[s.date for s in uncertain],
+            uncertain=[s.date for _w, s, _slot in uncertain],
             text="",
         )
         if dry_run:
@@ -714,6 +742,9 @@ def register_coach_tools(
             writer = router.select(Capability.WORKOUT_CREATE, Capability.WORKOUT_SCHEDULE)
             deleter = router.select(Capability.WORKOUT_DELETE) if stale else None
             result = base
+            for s in orphan_cores:  # the core day changed: its workout is obsolete
+                s.core_workout_id = None
+                s.core_scheduled = False
             for wid in stale:
                 try:
                     if deleter is not None:
@@ -726,26 +757,31 @@ def register_coach_tools(
             plan.stale_garmin_workout_ids = [w for w in stale if w not in result.deleted]
             store.save_plan(plan)
 
-            jobs = [(w, s, True) for w, s in create] + [(w, s, False) for w, s in schedule]
-            for i, (week_index, s, needs_create) in enumerate(jobs):
-                name = workout_name(s, week_index)
+            jobs = [(w, s, slot, True) for w, s, slot in create]
+            jobs += [(w, s, slot, False) for w, s, slot in schedule]
+            for i, (week_index, s, slot, needs_create) in enumerate(jobs):
+                name = job_name(week_index, s, slot)
+                id_attr, sched_attr, pending_attr = slot
                 try:
                     if needs_create:
-                        steps = session_steps(
-                            s,
-                            plan.easy_pace,
-                            goal.race_pace_s_per_km,
-                            plan.threshold_pace,
-                            plan.baseline.vdot,
-                        )
-                        minutes = s.est_duration_min or max(20, round(s.distance_km * 7))
                         # Mark before calling Garmin: a crash in between leaves an "uncertain"
                         # session instead of a silent duplicate on the next push.
-                        s.garmin_push_pending = True
+                        setattr(s, pending_attr, True)
                         store.save_plan(plan)
-                        created = writer.create_running_workout(
-                            build_running_workout(name, steps, minutes * 60)
-                        )
+                        if slot is CORE_SLOT:
+                            created = writer.create_strength_workout(core.build_core_workout(name))
+                        else:
+                            steps = session_steps(
+                                s,
+                                plan.easy_pace,
+                                goal.race_pace_s_per_km,
+                                plan.threshold_pace,
+                                plan.baseline.vdot,
+                            )
+                            minutes = s.est_duration_min or max(20, round(s.distance_km * 7))
+                            created = writer.create_running_workout(
+                                build_running_workout(name, steps, minutes * 60)
+                            )
                         new_id = created.get("workoutId")
                         if not isinstance(new_id, int):
                             missing = UpstreamServiceError(
@@ -755,35 +791,36 @@ def register_coach_tools(
                             )
                             missing.retryable = False
                             raise missing
-                        s.garmin_workout_id = new_id
-                        s.garmin_push_pending = False
+                        setattr(s, id_attr, new_id)
+                        setattr(s, pending_attr, False)
                         store.save_plan(plan)
-                    assert s.garmin_workout_id is not None
-                    writer.schedule_workout(s.garmin_workout_id, s.date)
-                    s.garmin_scheduled = True
+                    wid = getattr(s, id_attr)
+                    assert wid is not None
+                    writer.schedule_workout(wid, s.date)
+                    setattr(s, sched_attr, True)
                     store.save_plan(plan)
                     result.created.append(
-                        PushEntry(date=s.date, name=name, workout_id=s.garmin_workout_id, ok=True)
+                        PushEntry(date=s.date, name=name, workout_id=wid, ok=True)
                     )
                 except GarminMCPError as exc:
                     if (
                         needs_create
-                        and s.garmin_workout_id is None
+                        and getattr(s, id_attr) is None
                         and not isinstance(exc, UpstreamServiceError)
                     ):
                         # Refused outright (4xx, auth, rate limit): nothing was created.
-                        s.garmin_push_pending = False
+                        setattr(s, pending_attr, False)
                         store.save_plan(plan)
                     note = (
                         " (created but not scheduled: the next push schedules it)"
-                        if s.garmin_workout_id is not None and not s.garmin_scheduled
+                        if getattr(s, id_attr) is not None and not getattr(s, sched_attr)
                         else ""
                     )
                     result.created.append(
                         PushEntry(
                             date=s.date,
                             name=name,
-                            workout_id=s.garmin_workout_id,
+                            workout_id=getattr(s, id_attr),
                             ok=False,
                             error=f"{exc}{note}",
                         )

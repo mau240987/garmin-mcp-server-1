@@ -29,6 +29,7 @@ KINDS: dict[str, tuple[str, str]] = {
 }
 VARIANTS = {"progressive": "progressivo", "race_pace": "a ritmo gara"}
 PHASES = {"base": "base", "build": "costruzione", "specific": "specifica", "taper": "scarico"}
+CORE_MINUTES = 10
 TARGETS = {
     "surges": "allunghi",
     "intervals": "ripetute",
@@ -257,7 +258,13 @@ def format_digest(d: dict[str, Any]) -> str:
             head += f" · fase {PHASES.get(week['phase'], week['phase'])}"
         if week.get("target_km"):
             head += f" · {num(week['target_km'])} km"
-        lines += ["", head, *[session_line(s) for s in sessions]]
+        lines += ["", head]
+        for s in sessions:
+            lines.append(session_line(s))
+            if s.get("core"):
+                lines.append(f"   💪 + core ~{CORE_MINUTES} min a corpo libero, dopo la corsa")
+        if week.get("core") and any(s.get("core") for s in sessions):
+            lines.append(f"💪 <b>Core</b> (casa, corpo libero): {escape(str(week['core']))}")
     if d.get("garmin"):
         lines += ["", _garmin(d["garmin"], preview)]
     if d.get("errors"):

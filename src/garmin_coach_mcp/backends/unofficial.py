@@ -83,6 +83,13 @@ class UnofficialBackend(BackendBase):
             )
         )
 
+    def create_strength_workout(self, workout: Any) -> dict[str, Any]:
+        return _as_dict(
+            self.session.call(
+                "create_workout", lambda c: c.upload_strength_workout(workout), idempotent=False
+            )
+        )
+
     def schedule_workout(self, workout_id: int, day: dt.date) -> None:
         self.session.call(
             "schedule_workout",
